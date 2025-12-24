@@ -30,17 +30,17 @@ class MongoDBAtlasService:
             
             # Test connection
             await self.client.admin.command('ping')
-            logger.info("✅ Connected to MongoDB Atlas successfully!")
+            logger.info("Connected to MongoDB Atlas successfully!")
             
             # Initialize collections
             await self.initialize_collections()
             return True
             
         except ConnectionFailure as e:
-            logger.error(f"❌ Failed to connect to MongoDB Atlas: {e}")
+            logger.error(f"Failed to connect to MongoDB Atlas: {e}")
             return False
         except Exception as e:
-            logger.error(f"❌ MongoDB Atlas connection error: {e}")
+            logger.error(f"MongoDB Atlas connection error: {e}")
             return False
     
     async def disconnect(self):
@@ -83,10 +83,10 @@ class MongoDBAtlasService:
                     await collection.create_index("doctor_id")
                     await collection.create_index("appointment_date")
                 
-                logger.info(f"✅ Initialized collection: {collection_name}")
+                logger.info(f"Initialized collection: {collection_name}")
                 
         except Exception as e:
-            logger.error(f"❌ Error initializing collections: {e}")
+            logger.error(f"Error initializing collections: {e}")
     
     async def health_check(self) -> Dict[str, Any]:
         """Check MongoDB Atlas connection health"""
@@ -200,6 +200,34 @@ class MongoDBAtlasService:
             return result.modified_count > 0
         except Exception as e:
             logger.error(f"Error updating voice session: {e}")
+            return False
+    
+    async def get_user_voice_sessions(self, user_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get user's voice session history"""
+        try:
+            cursor = self.database.voice_sessions.find({"user_id": user_id}).sort("created_at", -1).limit(limit)
+            sessions = []
+            async for session in cursor:
+                session["_id"] = str(session["_id"])
+                sessions.append(session)
+            return sessions
+        except Exception as e:
+            logger.error(f"Error getting user voice sessions: {e}")
+            return []
+    
+    async def add_message_to_voice_session(self, session_id: str, messages: List[Dict[str, Any]]) -> bool:
+        """Add messages to voice session conversation"""
+        try:
+            result = await self.database.voice_sessions.update_one(
+                {"session_id": session_id},
+                {
+                    "$push": {"conversation": {"$each": messages}},
+                    "$set": {"updated_at": datetime.now()}
+                }
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"Error adding messages to voice session: {e}")
             return False
     
     # AR Scans

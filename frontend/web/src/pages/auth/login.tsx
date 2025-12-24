@@ -18,7 +18,7 @@ export default function LoginPage() {
   const router = useRouter();
   const { login, isAuthenticated, isLoading, error, clearError } = useAuthStore();
   const [showPassword, setShowPassword] = useState(false);
-  
+
   const {
     register,
     handleSubmit,
@@ -27,7 +27,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      router.push('/');
+      router.push('/dashboard');
     }
   }, [isAuthenticated, router]);
 
@@ -42,7 +42,7 @@ export default function LoginPage() {
     const success = await login(data.email, data.password);
     if (success) {
       toast.success('Login successful!');
-      router.push('/');
+      router.push('/dashboard');
     }
   };
 

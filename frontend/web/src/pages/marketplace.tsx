@@ -28,7 +28,7 @@ const MarketplacePage: React.FC = () => {
 
   useEffect(() => {
     if (!loading && !user) {
-      router.push('/auth/login');
+      router.push('/');
     } else if (user) {
       fetchDoctors();
     }
@@ -38,7 +38,7 @@ const MarketplacePage: React.FC = () => {
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
       const queryParams = new URLSearchParams();
-      
+
       if (filters.specialty) queryParams.append('specialty', filters.specialty);
       if (filters.location) queryParams.append('location', filters.location);
       if (filters.availability) queryParams.append('availability', filters.availability);
@@ -46,7 +46,7 @@ const MarketplacePage: React.FC = () => {
 
       const response = await fetch(`${apiUrl}/api/marketplace/doctors?${queryParams}`);
       const data = await response.json();
-      
+
       if (data.success) {
         setDoctors(data.doctors);
         setFilteredDoctors(data.doctors);
@@ -61,34 +61,34 @@ const MarketplacePage: React.FC = () => {
   const handleFilterChange = (key: string, value: string) => {
     const newFilters = { ...filters, [key]: value };
     setFilters(newFilters);
-    
+
     // Apply filters
     let filtered = doctors;
-    
+
     if (newFilters.specialty) {
-      filtered = filtered.filter(doc => 
+      filtered = filtered.filter(doc =>
         doc.specialty.toLowerCase().includes(newFilters.specialty.toLowerCase())
       );
     }
-    
+
     if (newFilters.location) {
-      filtered = filtered.filter(doc => 
+      filtered = filtered.filter(doc =>
         doc.location.toLowerCase().includes(newFilters.location.toLowerCase())
       );
     }
-    
+
     if (newFilters.availability === 'today') {
-      filtered = filtered.filter(doc => 
+      filtered = filtered.filter(doc =>
         doc.availability.toLowerCase().includes('today')
       );
     }
-    
+
     if (newFilters.maxPrice) {
-      filtered = filtered.filter(doc => 
+      filtered = filtered.filter(doc =>
         doc.price <= parseInt(newFilters.maxPrice)
       );
     }
-    
+
     setFilteredDoctors(filtered);
   };
 
@@ -326,7 +326,7 @@ const MarketplacePage: React.FC = () => {
                     <input
                       type="date"
                       value={bookingData.appointment_date}
-                      onChange={(e) => setBookingData({...bookingData, appointment_date: e.target.value})}
+                      onChange={(e) => setBookingData({ ...bookingData, appointment_date: e.target.value })}
                       className="w-full bg-dark-bg-tertiary border border-dark-border-primary rounded-xl px-4 py-3 text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
                     />
                   </div>
@@ -337,7 +337,7 @@ const MarketplacePage: React.FC = () => {
                     <input
                       type="time"
                       value={bookingData.appointment_time}
-                      onChange={(e) => setBookingData({...bookingData, appointment_time: e.target.value})}
+                      onChange={(e) => setBookingData({ ...bookingData, appointment_time: e.target.value })}
                       className="w-full bg-dark-bg-tertiary border border-dark-border-primary rounded-xl px-4 py-3 text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
                     />
                   </div>
@@ -349,7 +349,7 @@ const MarketplacePage: React.FC = () => {
                   </label>
                   <select
                     value={bookingData.consultation_type}
-                    onChange={(e) => setBookingData({...bookingData, consultation_type: e.target.value})}
+                    onChange={(e) => setBookingData({ ...bookingData, consultation_type: e.target.value })}
                     className="w-full bg-dark-bg-tertiary border border-dark-border-primary rounded-xl px-4 py-3 text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
                   >
                     <option value="in_person">In Person</option>
@@ -365,7 +365,7 @@ const MarketplacePage: React.FC = () => {
                   <input
                     type="text"
                     value={bookingData.symptoms}
-                    onChange={(e) => setBookingData({...bookingData, symptoms: e.target.value})}
+                    onChange={(e) => setBookingData({ ...bookingData, symptoms: e.target.value })}
                     placeholder="headache, fever, fatigue"
                     className="w-full bg-dark-bg-tertiary border border-dark-border-primary rounded-xl px-4 py-3 text-dark-text-primary placeholder-dark-text-secondary focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
                   />
@@ -377,7 +377,7 @@ const MarketplacePage: React.FC = () => {
                   </label>
                   <textarea
                     value={bookingData.notes}
-                    onChange={(e) => setBookingData({...bookingData, notes: e.target.value})}
+                    onChange={(e) => setBookingData({ ...bookingData, notes: e.target.value })}
                     rows={3}
                     className="w-full bg-dark-bg-tertiary border border-dark-border-primary rounded-xl px-4 py-3 text-dark-text-primary placeholder-dark-text-secondary focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
                     placeholder="Any additional information..."

@@ -3,30 +3,18 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
 import Link from 'next/link';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuthStore } from '../stores/authStore';
 import LoadingSpinner from '../components/ui/LoadingSpinner';
+import ParticleBackground from '../components/ui/ParticleBackground';
 
 export default function HomePage() {
   const router = useRouter();
-  const { user, loading } = useAuth();
+  const { user, isLoading: loading } = useAuthStore();
 
-  useEffect(() => {
-    if (!loading && user) {
-      router.push('/dashboard');
-    }
-  }, [user, loading, router]);
+  // Removed auto-redirect to prevent Fast Refresh loops
+  // User can manually navigate to dashboard via the "Get Started" or "Sign In" buttons logic if needed
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <LoadingSpinner />
-      </div>
-    );
-  }
-
-  if (user) {
-    return null; // Will redirect to dashboard
-  }
+  // if (loading) ... (keep loading spinner if desired, or remove to show landing page immediately)
 
   return (
     <>
@@ -37,7 +25,8 @@ export default function HomePage() {
         <link rel="icon" href="/favicon.ico" />
       </Head>
 
-      <div className="min-h-screen bg-gradient-dark">
+      <div className="min-h-screen bg-gradient-dark relative overflow-hidden">
+        <ParticleBackground />
         {/* Navigation */}
         <nav className="glass-strong border-b border-dark-border-primary sticky top-0 z-50">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -65,7 +54,7 @@ export default function HomePage() {
         </nav>
 
         {/* Hero Section */}
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16 animate-fade-in">
+        <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16 animate-fade-in">
           <div className="text-center">
             <h1 className="text-4xl md:text-6xl font-extrabold text-dark-text-primary mb-6">
               The Future of
@@ -74,7 +63,7 @@ export default function HomePage() {
               is Here
             </h1>
             <p className="text-xl text-dark-text-secondary mb-8 max-w-3xl mx-auto">
-              Experience revolutionary AI-powered healthcare with voice consultations, AR medical scanning, 
+              Experience revolutionary AI-powered healthcare with voice consultations, AR medical scanning,
               gamified therapy, and personalized health predictions.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
@@ -89,7 +78,7 @@ export default function HomePage() {
         </div>
 
         {/* Features Grid */}
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+        <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
           <div className="text-center mb-16">
             <h2 className="text-3xl font-bold text-dark-text-primary mb-4">
               12 Revolutionary Features
@@ -169,7 +158,7 @@ export default function HomePage() {
         </div>
 
         {/* CTA Section */}
-        <div className="gradient-primary py-16 relative overflow-hidden">
+        <div className="relative z-10 gradient-primary py-16 overflow-hidden">
           <div className="absolute inset-0 bg-black opacity-20"></div>
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center relative z-10">
             <h2 className="text-3xl font-bold text-white mb-4">
@@ -185,7 +174,7 @@ export default function HomePage() {
         </div>
 
         {/* Footer */}
-        <footer className="bg-dark-bg-secondary border-t border-dark-border-primary py-12">
+        <footer className="relative z-10 bg-dark-bg-secondary border-t border-dark-border-primary py-12">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-center">
               <div className="flex items-center justify-center mb-4">

@@ -28,7 +28,9 @@ interface NavigationItem {
 }
 
 const navigation: NavigationItem[] = [
-  { name: 'Dashboard', href: '/', icon: HomeIcon, roles: ['doctor', 'admin'] },
+  { name: 'Dashboard', href: '/dashboard', icon: HomeIcon, roles: ['doctor', 'admin', 'patient'] },
+  { name: '🎯 Get Started', href: '/onboarding', icon: UserCircleIcon, roles: ['doctor', 'admin', 'patient'] },
+  { name: '🤖 AI Coach', href: '/ai-coach', icon: ChartBarIcon, roles: ['doctor', 'admin', 'patient'] },
   { name: 'Patients', href: '/patients', icon: UserGroupIcon, roles: ['doctor'] },
   { name: 'Appointments', href: '/appointments', icon: CalendarIcon, roles: ['doctor'] },
   { name: 'Analytics', href: '/analytics', icon: ChartBarIcon, roles: ['doctor', 'admin'] },
@@ -42,13 +44,13 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const { user, logout } = useAuthStore();
   const router = useRouter();
 
-  const filteredNavigation = navigation.filter(item => 
+  const filteredNavigation = navigation.filter(item =>
     user?.role && item.roles.includes(user.role)
   );
 
   const handleLogout = async () => {
     await logout();
-    router.push('/auth/login');
+    router.push('/');
   };
 
   return (
@@ -77,14 +79,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               className="fixed inset-y-0 left-0 z-50 w-64 glass-strong lg:hidden border-r border-dark-border-primary"
             >
               <div className="flex h-16 items-center justify-between px-4 border-b border-dark-border-primary">
-                <div className="flex items-center">
+                <Link href="/dashboard" className="flex items-center">
                   <div className="h-8 w-8 bg-gradient-primary rounded-lg flex items-center justify-center shadow-lg">
                     <svg className="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
                     </svg>
                   </div>
                   <span className="ml-2 text-lg font-bold text-gradient">HealthSync AI</span>
-                </div>
+                </Link>
                 <button
                   type="button"
                   className="text-dark-text-secondary hover:text-dark-text-primary transition-colors"
@@ -99,11 +101,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                     <li key={item.name}>
                       <Link
                         href={item.href}
-                        className={`group flex items-center px-3 py-3 text-sm font-medium rounded-lg transition-all ${
-                          router.pathname === item.href
-                            ? 'bg-gradient-primary text-white shadow-lg glow-blue'
-                            : 'text-dark-text-secondary hover:bg-dark-bg-hover hover:text-dark-text-primary'
-                        }`}
+                        className={`group flex items-center px-3 py-3 text-sm font-medium rounded-lg transition-all ${router.pathname === item.href
+                          ? 'bg-gradient-primary text-white shadow-lg glow-blue'
+                          : 'text-dark-text-secondary hover:bg-dark-bg-hover hover:text-dark-text-primary'
+                          }`}
                         onClick={() => setSidebarOpen(false)}
                       >
                         <item.icon className={`mr-3 h-5 w-5 ${router.pathname === item.href ? 'text-white' : ''}`} />
@@ -122,14 +123,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
       <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-72 lg:flex-col">
         <div className="flex min-h-0 flex-1 flex-col glass-strong border-r border-dark-border-primary">
           <div className="flex h-20 flex-shrink-0 items-center px-6 gradient-primary border-b border-dark-border-primary">
-            <div className="flex items-center">
+            <Link href="/dashboard" className="flex items-center">
               <div className="h-10 w-10 bg-white bg-opacity-20 rounded-lg flex items-center justify-center shadow-lg backdrop-blur-sm">
                 <svg className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
                 </svg>
               </div>
               <span className="ml-3 text-white font-bold text-xl">HealthSync AI</span>
-            </div>
+            </Link>
           </div>
           <div className="flex flex-1 flex-col overflow-y-auto">
             <nav className="flex-1 px-4 py-6">
@@ -138,11 +139,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                   <li key={item.name}>
                     <Link
                       href={item.href}
-                      className={`group flex items-center px-4 py-3 text-sm font-medium rounded-xl transition-all ${
-                        router.pathname === item.href
-                          ? 'bg-gradient-primary text-white shadow-lg glow-blue'
-                          : 'text-dark-text-secondary hover:bg-dark-bg-hover hover:text-dark-text-primary'
-                      }`}
+                      className={`group flex items-center px-4 py-3 text-sm font-medium rounded-xl transition-all ${router.pathname === item.href
+                        ? 'bg-gradient-primary text-white shadow-lg glow-blue'
+                        : 'text-dark-text-secondary hover:bg-dark-bg-hover hover:text-dark-text-primary'
+                        }`}
                     >
                       <item.icon className={`mr-3 h-5 w-5 ${router.pathname === item.href ? 'text-white' : ''}`} />
                       {item.name}

@@ -10,7 +10,7 @@ from scipy import signal
 from scipy.stats import skew, kurtosis
 import structlog
 
-from config import settings
+from config_flexible import settings
 from services.ai_service import AIService
 from services.db_service import DatabaseService
 

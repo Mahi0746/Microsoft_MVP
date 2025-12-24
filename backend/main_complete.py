@@ -1,8 +1,10 @@
 # HealthSync AI - Complete Backend with All Features
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, status, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, EmailStr
 import os
 from datetime import datetime, timedelta
 import uvicorn
@@ -13,6 +15,10 @@ import json
 import base64
 from typing import Optional, List, Dict, Any
 import asyncio
+from jose import JWTError, jwt
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from api.routes import therapy_game
 
 # Use flexible config that handles missing API keys
 from config_flexible import settings, configure_logging, APIDocsConfig
@@ -20,6 +26,133 @@ from config_flexible import settings, configure_logging, APIDocsConfig
 # Configure logging
 configure_logging()
 logger = logging.getLogger(__name__)
+
+# JWT Configuration
+SECRET_KEY = settings.secret_key
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+# Security
+security = HTTPBearer()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Pydantic Models
+class UserSignup(BaseModel):
+    email: EmailStr
+    password: str
+    first_name: str
+    last_name: str
+    role: str = "patient"
+    phone: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    gender: Optional[str] = None
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user: dict
+
+# Helper functions
+def hash_password(password: str) -> str:
+    """Hash password using bcrypt"""
+    return pwd_context.hash(password)
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify password against hash"""
+    return pwd_context.verify(password, hashed)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    """Create JWT access token"""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire, "type": "access"})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def create_refresh_token(data: dict):
+    """Create JWT refresh token"""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def verify_token(token: str):
+    """Verify JWT token"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+
+async def get_current_user(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+    """Get current user from JWT token (from header or cookie)"""
+    token = None
+    
+    # Try to get token from Authorization header first
+    if credentials:
+        token = credentials.credentials
+    
+    # If no header token, try to get from cookie
+    if not token:
+        token = request.cookies.get("access_token")
+    
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No authentication token provided",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    payload = verify_token(token)
+    
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Check if it's an access token
+    if payload.get("type") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    user_id = payload.get("sub")
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Get user from MongoDB Atlas
+    if mongodb_service:
+        user = await mongodb_service.get_user(user_id)
+        if user:
+            return user
+    
+    # Fallback to demo user
+    for user in demo_storage["users"].values():
+        if user.get("user_id") == user_id:
+            return user
+    
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="User not found",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 # Initialize services
 mongodb_service = None
@@ -37,7 +170,7 @@ def check_supabase():
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     # Startup
-    logger.info("🚀 Starting HealthSync AI Complete Backend...")
+    logger.info("Starting HealthSync AI Complete Backend...")
     
     global mongodb_service, supabase_client
     
@@ -47,48 +180,64 @@ async def lifespan(app: FastAPI):
             from services.mongodb_atlas_service import get_mongodb_service, close_mongodb_connection
             mongodb_service = await get_mongodb_service()
             if mongodb_service and mongodb_service.client:
-                logger.info("✅ MongoDB Atlas connected successfully!")
+                logger.info("MongoDB Atlas connected successfully!")
             else:
-                logger.warning("⚠️ MongoDB Atlas connection failed, using demo mode")
+                logger.warning("MongoDB Atlas connection failed, using demo mode")
                 mongodb_service = None
         except Exception as e:
-            logger.warning(f"⚠️ MongoDB Atlas error: {e}, using demo mode")
+            logger.warning(f"MongoDB Atlas error: {e}, using demo mode")
             mongodb_service = None
     else:
-        logger.info("ℹ️ MongoDB Atlas not configured, using demo mode")
+        logger.info("MongoDB Atlas not configured, using demo mode")
     
     # Supabase removed - using MongoDB only
     supabase_client = None
     
     # Log AI service status
     ai_status = settings.get_ai_status()
-    logger.info(f"🤖 AI Services Status: {ai_status}")
+    logger.info(f"AI Services Status: {ai_status}")
     
     # Initialize AR Medical Scanner models
     if settings.enable_ar_scanner:
         try:
-            logger.info("🎯 Initializing AR Medical Scanner...")
+            logger.info("Initializing AR Medical Scanner...")
             from services.ar_scanner_service import ARMedicalScannerService
             await ARMedicalScannerService.initialize_models()
-            logger.info("✅ AR Medical Scanner initialized successfully")
+            logger.info("AR Medical Scanner initialized successfully")
         except Exception as e:
-            logger.warning(f"⚠️ AR Scanner initialization failed: {e}")
+            logger.warning(f"AR Scanner initialization failed: {e}")
+
+    # Initialize DatabaseService (Required by Therapy Game & Auth Middleware)
+    try:
+        from services.db_service import DatabaseService
+        await DatabaseService.initialize()
+        logger.info("DatabaseService initialized successfully")
+    except Exception as e:
+        logger.warning(f"DatabaseService initialization failed: {e}")
     
     if settings.is_demo_mode():
-        logger.info("🎭 Running in DEMO MODE - connect real API keys for full functionality")
+        logger.info("Running in DEMO MODE - connect real API keys for full functionality")
     else:
-        logger.info("🚀 Running with REAL AI SERVICES")
+        logger.info("Running with REAL AI SERVICES")
     
     yield
     
     # Shutdown
-    logger.info("🔄 Shutting down HealthSync AI...")
+    logger.info("Shutting down HealthSync AI...")
+    
+    # Close DatabaseService
+    try:
+        from services.db_service import DatabaseService
+        await DatabaseService.close()
+    except:
+        pass
+
     if mongodb_service:
         try:
             await close_mongodb_connection()
         except:
             pass
-    logger.info("✅ Shutdown complete")
+    logger.info("Shutdown complete")
 
 # FastAPI app
 app = FastAPI(
@@ -137,6 +286,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include Therapy Game Router
+app.include_router(therapy_game.router, prefix="/api")
+
+# Include AI Agents Router
+from api.routes import agents
+app.include_router(agents.router, prefix="/api")
+
+# Include Google Fit Router
+from api.routes import google_fit
+app.include_router(google_fit.router, prefix="/api")
+
+# Include Onboarding Router (Lifestyle Assessment)
+from api.routes import onboarding
+app.include_router(onboarding.router, prefix="/api")
+
+# Include Voice AI Router
+from api.routes import voice
+app.include_router(voice.router, prefix="/api/voice")
 
 # Create uploads directory
 os.makedirs("uploads", exist_ok=True)
@@ -258,94 +426,142 @@ async def call_groq_api(prompt: str, user_message: str) -> str:
 # AUTHENTICATION ENDPOINTS
 # =============================================================================
 
-@app.post("/api/auth/register", tags=["Authentication"])
-async def register(user_data: dict):
+@app.post("/api/auth/signup", response_model=Token, tags=["Authentication"])
+async def signup(user_data: UserSignup, response: Response):
     """Register new user with comprehensive profile"""
     try:
-        email = user_data.get("email", "")
-        if not email:
-            raise HTTPException(status_code=400, detail="Email is required")
-        
         # Check MongoDB Atlas first
         if mongodb_service:
             try:
-                existing_user = await mongodb_service.get_user_by_email(email)
+                existing_user = await mongodb_service.get_user_by_email(user_data.email)
                 if existing_user:
-                    raise HTTPException(status_code=400, detail="User already exists")
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="User with this email already exists"
+                    )
+                
+                # Validate password
+                if len(user_data.password) < 6:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Password must be at least 6 characters long"
+                    )
                 
                 user_id = str(uuid.uuid4())
+                hashed_password = hash_password(user_data.password)
+                
                 new_user = {
                     "user_id": user_id,
-                    "email": email,
-                    "firstName": user_data.get("firstName", ""),
-                    "lastName": user_data.get("lastName", ""),
-                    "role": user_data.get("role", "patient"),
-                    "password_hash": "hashed_password_placeholder",
-                    "phone": user_data.get("phone", ""),
-                    "date_of_birth": user_data.get("dateOfBirth"),
-                    "gender": user_data.get("gender"),
+                    "email": user_data.email,
+                    "firstName": user_data.first_name,
+                    "lastName": user_data.last_name,
+                    "role": user_data.role,
+                    "password_hash": hashed_password,
+                    "phone": user_data.phone or "",
+                    "date_of_birth": user_data.date_of_birth,
+                    "gender": user_data.gender,
+                    "is_active": True,
                     "profile": {
-                        "age": user_data.get("age", 35),
-                        "height": user_data.get("height", 170),
-                        "weight": user_data.get("weight", 70),
-                        "medical_history": user_data.get("medicalHistory", []),
-                        "allergies": user_data.get("allergies", []),
-                        "emergency_contact": user_data.get("emergencyContact", {})
+                        "age": 35,
+                        "height": 170,
+                        "weight": 70,
+                        "medical_history": [],
+                        "allergies": [],
+                        "emergency_contact": {}
                     }
                 }
                 
                 result = await mongodb_service.create_user(new_user)
                 
                 if result["success"]:
-                    return {
-                        "success": True,
-                        "message": "Registration successful (MongoDB Atlas)",
-                        "user": {
-                            "id": user_id,
-                            "email": new_user["email"],
-                            "firstName": new_user["firstName"],
-                            "lastName": new_user["lastName"],
-                            "role": new_user["role"]
-                        },
-                        "token": f"jwt_token_{user_id}",
-                        "storage": "mongodb_atlas"
+                    # Create access token
+                    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+                    access_token = create_access_token(
+                        data={"sub": user_id, "email": user_data.email, "role": user_data.role},
+                        expires_delta=access_token_expires
+                    )
+                    refresh_token = create_refresh_token(
+                        data={"sub": user_id, "email": user_data.email, "role": user_data.role}
+                    )
+                    
+                    # Set HTTP-only cookies
+                    response.set_cookie(
+                        key="access_token",
+                        value=access_token,
+                        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+                        httponly=True,
+                        secure=False,  # Set to True in production with HTTPS
+                        samesite="lax"
+                    )
+                    response.set_cookie(
+                        key="refresh_token",
+                        value=refresh_token,
+                        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+                        httponly=True,
+                        secure=False,  # Set to True in production with HTTPS
+                        samesite="lax"
+                    )
+                    
+                    user_response = {
+                        "id": user_id,
+                        "email": new_user["email"],
+                        "firstName": new_user["firstName"],
+                        "lastName": new_user["lastName"],
+                        "role": new_user["role"]
                     }
+                    
+                    return Token(
+                        access_token=access_token,
+                        token_type="bearer",
+                        user=user_response
+                    )
                     
             except HTTPException:
                 raise
             except Exception as e:
                 logger.error(f"MongoDB registration error: {e}")
         
-        # Demo mode registration
-        if email in demo_storage["users"]:
-            raise HTTPException(status_code=400, detail="User already exists (demo mode)")
+        # Demo mode registration (fallback)
+        if user_data.email in demo_storage["users"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User already exists (demo mode)"
+            )
         
-        user = get_or_create_demo_user(email, user_data.get("role", "patient"))
+        user = get_or_create_demo_user(user_data.email, user_data.role)
         user.update({
-            "firstName": user_data.get("firstName", "Demo"),
-            "lastName": user_data.get("lastName", "User"),
+            "firstName": user_data.first_name,
+            "lastName": user_data.last_name,
+            "password_hash": hash_password(user_data.password),
             "profile": {
-                "age": user_data.get("age", 35),
-                "height": user_data.get("height", 170),
-                "weight": user_data.get("weight", 70),
-                "medical_history": user_data.get("medicalHistory", []),
-                "allergies": user_data.get("allergies", [])
+                "age": 35,
+                "height": 170,
+                "weight": 70,
+                "medical_history": [],
+                "allergies": []
             }
         })
         
-        return {
-            "success": True,
-            "message": "Registration successful (demo mode)",
-            "user": {
-                "id": user["user_id"],
-                "email": user["email"],
-                "firstName": user["firstName"],
-                "lastName": user["lastName"],
-                "role": user["role"]
-            },
-            "token": f"demo_jwt_token_{user['user_id']}",
-            "storage": "demo_mode"
+        # Create access token for demo user
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user["user_id"], "email": user_data.email, "role": user_data.role},
+            expires_delta=access_token_expires
+        )
+        
+        user_response = {
+            "id": user["user_id"],
+            "email": user["email"],
+            "firstName": user["firstName"],
+            "lastName": user["lastName"],
+            "role": user["role"]
         }
+        
+        return Token(
+            access_token=access_token,
+            token_type="bearer",
+            user=user_response
+        )
         
     except HTTPException:
         raise
@@ -353,58 +569,251 @@ async def register(user_data: dict):
         logger.error(f"Registration error: {e}")
         raise HTTPException(status_code=500, detail="Registration failed")
 
-@app.post("/api/auth/login", tags=["Authentication"])
-async def login(credentials: dict):
-    """User login with automatic demo user creation"""
+@app.post("/api/auth/login", response_model=Token, tags=["Authentication"])
+async def login(credentials: UserLogin, response: Response):
+    """User login with proper password verification"""
     try:
-        email = credentials.get("email", "")
-        if not email:
-            raise HTTPException(status_code=400, detail="Email is required")
-        
         # Check MongoDB Atlas first
         if mongodb_service:
             try:
-                user = await mongodb_service.get_user_by_email(email)
+                user = await mongodb_service.get_user_by_email(credentials.email)
+                
                 if user:
-                    return {
-                        "success": True,
-                        "message": "Login successful (MongoDB Atlas)",
-                        "user": {
-                            "id": user["user_id"],
-                            "email": user["email"],
-                            "firstName": user["firstName"],
-                            "lastName": user["lastName"],
-                            "role": user["role"]
-                        },
-                        "token": f"jwt_token_{user['user_id']}",
-                        "storage": "mongodb_atlas"
+                    # Check if user is active
+                    if not user.get("is_active", True):
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Account is disabled"
+                        )
+                    
+                    # Verify password
+                    password_hash = user.get("password_hash", "")
+                    if not password_hash:
+                        logger.error(f"No password hash found for user {credentials.email}")
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid email or password"
+                        )
+                    
+                    if not verify_password(credentials.password, password_hash):
+                        logger.error(f"Password verification failed for user {credentials.email}")
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid email or password"
+                        )
+                    
+                    # Create access token
+                    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+                    access_token = create_access_token(
+                        data={"sub": user["user_id"], "email": user["email"], "role": user["role"]},
+                        expires_delta=access_token_expires
+                    )
+                    refresh_token = create_refresh_token(
+                        data={"sub": user["user_id"], "email": user["email"], "role": user["role"]}
+                    )
+                    
+                    # Set HTTP-only cookies
+                    response.set_cookie(
+                        key="access_token",
+                        value=access_token,
+                        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+                        httponly=True,
+                        secure=False,  # Set to True in production with HTTPS
+                        samesite="lax"
+                    )
+                    response.set_cookie(
+                        key="refresh_token",
+                        value=refresh_token,
+                        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+                        httponly=True,
+                        secure=False,  # Set to True in production with HTTPS
+                        samesite="lax"
+                    )
+                    
+                    user_response = {
+                        "id": user["user_id"],
+                        "email": user["email"],
+                        "firstName": user["firstName"],
+                        "lastName": user["lastName"],
+                        "role": user["role"]
                     }
+                    
+                    return Token(
+                        access_token=access_token,
+                        token_type="bearer",
+                        user=user_response
+                    )
+                    
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error(f"MongoDB login error: {e}")
         
-        # Demo mode login
-        role = "doctor" if "doctor" in email.lower() else "patient"
-        user = get_or_create_demo_user(email, role)
+        # Check demo users
+        for user in demo_storage["users"].values():
+            if user["email"] == credentials.email:
+                password_hash = user.get("password_hash", "")
+                if password_hash and verify_password(credentials.password, password_hash):
+                    # Create access token for demo user
+                    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+                    access_token = create_access_token(
+                        data={"sub": user["user_id"], "email": user["email"], "role": user["role"]},
+                        expires_delta=access_token_expires
+                    )
+                    
+                    user_response = {
+                        "id": user["user_id"],
+                        "email": user["email"],
+                        "firstName": user["firstName"],
+                        "lastName": user["lastName"],
+                        "role": user["role"]
+                    }
+                    
+                    return Token(
+                        access_token=access_token,
+                        token_type="bearer",
+                        user=user_response
+                    )
         
-        return {
-            "success": True,
-            "message": "Login successful (demo mode)",
-            "user": {
-                "id": user["user_id"],
-                "email": user["email"],
-                "firstName": user["firstName"],
-                "lastName": user["lastName"],
-                "role": user["role"]
-            },
-            "token": f"demo_jwt_token_{user['user_id']}",
-            "storage": "demo_mode"
-        }
+        # User not found or invalid password
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Login error: {e}")
         raise HTTPException(status_code=500, detail="Login failed")
+
+@app.options("/api/auth/login", tags=["Authentication"])
+async def login_options():
+    """Handle CORS preflight requests for login endpoint"""
+    return {"message": "OK"}
+
+@app.options("/api/auth/me", tags=["Authentication"])
+async def me_options():
+    """Handle CORS preflight requests for me endpoint"""
+    return {"message": "OK"}
+
+@app.get("/api/auth/me", tags=["Authentication"])
+async def get_current_user_profile(current_user: dict = Depends(get_current_user)):
+    """Get current user profile"""
+    try:
+        return {
+            "success": True,
+            "user": {
+                "id": current_user["user_id"],
+                "email": current_user["email"],
+                "firstName": current_user["firstName"],
+                "lastName": current_user["lastName"],
+                "role": current_user["role"],
+                "phone": current_user.get("phone", ""),
+                "dateOfBirth": current_user.get("date_of_birth"),
+                "gender": current_user.get("gender"),
+                "isActive": current_user.get("is_active", True)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Get user profile error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get user profile")
+
+@app.post("/api/auth/refresh", response_model=Token, tags=["Authentication"])
+async def refresh_token_endpoint(request: Request, response: Response):
+    """Refresh access token using refresh token"""
+    try:
+        # Get refresh token from cookie
+        refresh_token = request.cookies.get("refresh_token")
+        
+        if not refresh_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No refresh token provided"
+            )
+        
+        # Verify refresh token
+        payload = verify_token(refresh_token)
+        
+        if payload is None or payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token"
+            )
+        
+        user_id = payload.get("sub")
+        email = payload.get("email")
+        role = payload.get("role")
+        
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token"
+            )
+        
+        # Create new tokens
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        new_access_token = create_access_token(
+            data={"sub": user_id, "email": email, "role": role},
+            expires_delta=access_token_expires
+        )
+        new_refresh_token = create_refresh_token(
+            data={"sub": user_id, "email": email, "role": role}
+        )
+        
+        # Set new cookies
+        response.set_cookie(
+            key="access_token",
+            value=new_access_token,
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            httponly=True,
+            secure=False,
+            samesite="lax"
+        )
+        response.set_cookie(
+            key="refresh_token",
+            value=new_refresh_token,
+            max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+            httponly=True,
+            secure=False,
+            samesite="lax"
+        )
+        
+        user_response = {
+            "id": user_id,
+            "email": email,
+            "role": role,
+            "firstName": "",
+            "lastName": ""
+        }
+        
+        return Token(
+            access_token=new_access_token,
+            token_type="bearer",
+            user=user_response
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Token refresh failed: {e}")
+        raise HTTPException(status_code=401, detail="Token refresh failed")
+
+@app.post("/api/auth/logout", tags=["Authentication"])
+async def logout_user(response: Response, current_user: dict = Depends(get_current_user)):
+    """Logout user (invalidate tokens)"""
+    try:
+        # Clear cookies
+        response.delete_cookie(key="access_token")
+        response.delete_cookie(key="refresh_token")
+        
+        logger.info(f"User logged out: {current_user['user_id']}")
+        
+        return {"message": "Logged out successfully"}
+        
+    except Exception as e:
+        logger.error(f"Logout failed for user {current_user.get('user_id')}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Logout failed")
 
 # =============================================================================
 # VOICE AI DOCTOR ENDPOINTS
@@ -855,6 +1264,223 @@ async def get_user_scans(user_id: str = "demo_user", limit: int = 20):
     except Exception as e:
         logger.error(f"Get user scans error: {e}")
         raise HTTPException(status_code=500, detail="Failed to get scans")
+
+# =============================================================================
+# AR SCANNER RAG ENDPOINTS (Dynamic AI Medical Document Analysis)
+# =============================================================================
+
+@app.post("/api/ar-scanner-rag/scan-document", tags=["AR Scanner RAG"])
+async def scan_medical_document_rag(
+    file: UploadFile = File(...),
+    user_id: str = Form("demo_user")
+):
+    """
+    Scan medical document with AI Vision + RAG system.
+    Automatically detects document type and extracts key information.
+    """
+    
+    try:
+        logger.info(f"Processing medical document scan with RAG for user: {user_id}")
+        
+        # Validate file
+        if not file.content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="File must be an image")
+        
+        # Read and encode image
+        image_data = await file.read()
+        
+        # Convert to base64
+        image_b64 = base64.b64encode(image_data).decode()
+        image_data_url = f"data:{file.content_type};base64,{image_b64}"
+        
+        # Import RAG service
+        from services.ar_scanner_rag_service import MedicalDocumentRAGService
+        
+        # Process with RAG system
+        result = await MedicalDocumentRAGService.process_medical_document(
+            user_id=user_id,
+            image_data=image_data_url,
+            scan_metadata={
+                "filename": file.filename,
+                "content_type": file.content_type,
+                "file_size": len(image_data)
+            }
+        )
+        
+        return {
+            "success": True,
+            "message": "Medical document processed successfully",
+            "data": result
+        }
+        
+    except Exception as e:
+        logger.error(f"Medical document scan failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
+
+@app.post("/api/ar-scanner-rag/chat/{vector_store_id}", tags=["AR Scanner RAG"])
+async def chat_with_document_rag(
+    vector_store_id: str,
+    question: str = Form(...),
+    user_id: str = Form("demo_user")
+):
+    """
+    Chat with a processed medical document using RAG.
+    """
+    
+    try:
+        logger.info(f"Processing chat question for user: {user_id}, vector_store: {vector_store_id}")
+        
+        # Import RAG service
+        from services.ar_scanner_rag_service import MedicalDocumentRAGService
+        
+        # Get document info first
+        scan_result = await MedicalDocumentRAGService._get_scan_by_vector_store_id(vector_store_id)
+        
+        if not scan_result:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Verify user owns this document
+        if scan_result.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        doc_type = scan_result.get("document_type", "unknown")
+        
+        # Generate answer using RAG
+        chat_result = await MedicalDocumentRAGService.chat_with_document(
+            user_id=user_id,
+            vector_store_id=vector_store_id,
+            question=question,
+            doc_type=doc_type
+        )
+        
+        return {
+            "success": True,
+            "message": "Chat response generated",
+            "data": chat_result
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Chat with document failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
+@app.get("/api/ar-scanner-rag/my-documents", tags=["AR Scanner RAG"])
+async def get_my_documents_rag(user_id: str = "demo_user"):
+    """
+    Get all processed documents for the current user.
+    """
+    
+    try:
+        # Import RAG service
+        from services.ar_scanner_rag_service import MedicalDocumentRAGService
+        
+        # Get user's documents from database
+        documents = await MedicalDocumentRAGService._get_user_documents(user_id)
+        
+        return {
+            "success": True,
+            "message": "Documents retrieved",
+            "data": documents
+        }
+        
+    except Exception as e:
+        logger.error(f"Get user documents failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get documents: {str(e)}")
+
+@app.get("/api/ar-scanner-rag/chat-history/{vector_store_id}", tags=["AR Scanner RAG"])
+async def get_chat_history_rag(
+    vector_store_id: str,
+    user_id: str = "demo_user"
+):
+    """
+    Get chat history for a document.
+    """
+    
+    try:
+        # Import RAG service
+        from services.ar_scanner_rag_service import MedicalDocumentRAGService
+        
+        # Verify user owns this document
+        scan_result = await MedicalDocumentRAGService._get_scan_by_vector_store_id(vector_store_id)
+        
+        if not scan_result:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        if scan_result.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Get chat history
+        chat_history = await MedicalDocumentRAGService.get_chat_history(
+            user_id=user_id,
+            vector_store_id=vector_store_id
+        )
+        
+        return {
+            "success": True,
+            "message": "Chat history retrieved",
+            "data": chat_history
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get chat history failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get chat history: {str(e)}")
+
+@app.delete("/api/ar-scanner-rag/document/{vector_store_id}", tags=["AR Scanner RAG"])
+async def delete_document_rag(
+    vector_store_id: str,
+    user_id: str = Form("demo_user")
+):
+    """
+    Delete a processed document and its chat history.
+    """
+    
+    try:
+        # Import RAG service
+        from services.ar_scanner_rag_service import MedicalDocumentRAGService
+        
+        # Verify user owns this document
+        scan_result = await MedicalDocumentRAGService._get_scan_by_vector_store_id(vector_store_id)
+        
+        if not scan_result:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        if scan_result.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Delete document and chat history
+        await MedicalDocumentRAGService._delete_document(vector_store_id)
+        
+        return {
+            "success": True,
+            "message": "Document deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete document failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(e)}")
+
+@app.get("/api/ar-scanner-rag/document-types", tags=["AR Scanner RAG"])
+async def get_supported_document_types_rag():
+    """
+    Get list of supported document types that AI can detect.
+    """
+    
+    # Import RAG service
+    from services.ar_scanner_rag_service import MedicalDocumentRAGService
+    
+    return {
+        "success": True,
+        "message": "Supported document types",
+        "data": {
+            "document_types": MedicalDocumentRAGService.DOCUMENT_TYPES,
+            "note": "Document type is automatically detected by AI - no manual selection needed"
+        }
+    }
 
 # =============================================================================
 # THERAPY GAME ENDPOINTS

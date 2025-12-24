@@ -13,6 +13,8 @@ import structlog
 
 from config_flexible import settings
 from services.voice_service import VoiceProcessingService
+from services.voice_agent_service import VoiceAgentService
+from services.mongodb_atlas_service import get_mongodb_service
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
@@ -45,6 +47,12 @@ class VoiceMessageResponse(BaseModel):
     analysis: Optional[Dict[str, Any]] = None
     conversation: Optional[list] = None
 
+class VoiceCommandRequest(BaseModel):
+    text: str
+    user_id: str
+    session_id: Optional[str] = None
+    context: Optional[Dict[str, Any]] = None
+
 
 # =============================================================================
 # VOICE AI DOCTOR ROUTES
@@ -56,7 +64,7 @@ async def start_voice_session(session_data: VoiceSessionRequest):
     try:
         session_id = str(uuid.uuid4())
         
-        # Create session in memory storage (you can extend this to use MongoDB)
+        # Create session data
         session = {
             "session_id": session_id,
             "user_id": session_data.user_id,
@@ -68,9 +76,17 @@ async def start_voice_session(session_data: VoiceSessionRequest):
                 "urgency": "low",
                 "confidence": 0.85
             },
-            "recommendations": [],
-            "created_at": str(time.time())
+            "recommendations": []
         }
+        
+        # Store session in MongoDB
+        try:
+            mongodb = await get_mongodb_service()
+            if mongodb.client:
+                await mongodb.create_voice_session(session)
+                logger.info(f"Voice session created in MongoDB: {session_id}")
+        except Exception as e:
+            logger.warning(f"Could not save session to MongoDB: {e}")
         
         # Generate initial AI response using Groq
         ai_response = await _get_groq_response(
@@ -158,10 +174,23 @@ async def process_voice_audio(
         
         logger.info(f"Transcription: {transcript}")
         
+        # Fetch conversation history
+        history = []
+        try:
+            mongodb = await get_mongodb_service()
+            if mongodb.client:
+                session_data = await mongodb.get_voice_session(session_id)
+                if session_data and "conversation" in session_data:
+                    # Get last 10 messages for context (prevent token limit issues)
+                    history = session_data["conversation"][-10:]
+        except Exception as e:
+            logger.warning(f"Could not fetch history: {e}")
+
         # Get AI response using Groq
         ai_response = await _get_groq_response(
             "You are an AI medical assistant. Analyze the patient's message and provide helpful, supportive guidance while recommending professional consultation when appropriate.",
-            transcript
+            transcript,
+            history
         )
         
         logger.info(f"AI response generated: {ai_response[:100]}...")
@@ -187,6 +216,19 @@ async def process_voice_audio(
             "sentiment": "neutral",
             "recommendations": ["Stay hydrated", "Monitor symptoms", "Consult healthcare provider if symptoms persist"]
         }
+        
+        # Save to MongoDB
+        try:
+            mongodb = await get_mongodb_service()
+            if mongodb.client:
+                # Add analysis to the last message (AI response)
+                if conversation_entry and len(conversation_entry) > 0:
+                    conversation_entry[-1]["analysis"] = analysis
+                
+                await mongodb.add_message_to_voice_session(session_id, conversation_entry)
+                logger.info(f"Saved {len(conversation_entry)} messages to session {session_id}")
+        except Exception as e:
+            logger.error(f"Failed to save conversation to MongoDB: {e}")
         
         # Return JSON response (no binary data)
         return {
@@ -221,10 +263,23 @@ async def send_text_message(message_data: VoiceMessageRequest):
         if not user_message.strip():
             raise HTTPException(status_code=400, detail="Message cannot be empty")
         
+        # Fetch conversation history
+        history = []
+        try:
+            mongodb = await get_mongodb_service()
+            if mongodb.client:
+                session_data = await mongodb.get_voice_session(message_data.session_id)
+                if session_data and "conversation" in session_data:
+                    # Get last 10 messages for context
+                    history = session_data["conversation"][-10:]
+        except Exception as e:
+            logger.warning(f"Could not fetch history: {e}")
+
         # Get AI response using Groq
         ai_response = await _get_groq_response(
             "You are an AI medical assistant. Analyze the patient's message and provide helpful, supportive guidance while recommending professional consultation when appropriate.",
-            user_message
+            user_message,
+            history
         )
         
         # Create conversation entry with string timestamps
@@ -249,6 +304,18 @@ async def send_text_message(message_data: VoiceMessageRequest):
             "recommendations": ["Stay hydrated", "Monitor symptoms", "Consult healthcare provider if symptoms persist"]
         }
         
+        # Save to MongoDB
+        try:
+            mongodb = await get_mongodb_service()
+            if mongodb.client:
+                # Add analysis to the last message (AI response)
+                if conversation_entry and len(conversation_entry) > 0:
+                    conversation_entry[-1]["analysis"] = analysis
+                
+                await mongodb.add_message_to_voice_session(message_data.session_id, conversation_entry)
+        except Exception as e:
+            logger.error(f"Failed to save conversation to MongoDB: {e}")
+        
         return {
             "success": True,
             "ai_response": ai_response,
@@ -260,6 +327,89 @@ async def send_text_message(message_data: VoiceMessageRequest):
     except Exception as e:
         logger.error(f"Text message processing error: {e}")
         raise HTTPException(status_code=500, detail="Failed to process message")
+
+
+@router.post("/command")
+async def process_voice_command(request: VoiceCommandRequest):
+    """
+    Process a text command from the voice interface using the LangChain Agent.
+    This enables the 'Experts' pattern (navigation, medication lookup, etc).
+    """
+    try:
+        logger.info(f"Processing voice command: {request.text}")
+        
+        # Get History/Session Context
+        history = []
+        session_id = request.session_id
+        mongodb = await get_mongodb_service()
+        
+        if mongodb.client:
+            # If no session_id provided, try to find the most recent active one for this user
+            if not session_id:
+                recent_sessions = await mongodb.get_user_voice_sessions(request.user_id, limit=1)
+                if recent_sessions:
+                    session_id = recent_sessions[0]["session_id"]
+                    logger.info(f"Auto-detected recent session: {session_id}")
+            
+            # Fetch history if we have a session_id
+            if session_id:
+                session_data = await mongodb.get_voice_session(session_id)
+                if session_data and "conversation" in session_data:
+                    history = session_data["conversation"][-10:]
+        
+        # Use the new VoiceAgentService with history
+        user_context = request.context or {"patient_id": request.user_id, "role": "patient"}
+        result = await VoiceAgentService.process_voice_command(request.text, user_context, history=history)
+        
+        # Save interaction to DB
+        try:
+            if mongodb.client:
+                # If we still don't have a session_id, create one now to start tracking history
+                if not session_id:
+                    session_id = str(uuid.uuid4())
+                    new_session = {
+                        "session_id": session_id,
+                        "user_id": request.user_id,
+                        "status": "active",
+                        "conversation": [],
+                        "created_at": time.time()
+                    }
+                    await mongodb.create_voice_session(new_session)
+                    logger.info(f"Created new voice session for command: {session_id}")
+
+                # Construct conversation turn
+                # The result is a dict, we need to extract the text message for the log
+                ai_text = result.get("message", "")
+                if isinstance(ai_text, dict):
+                    ai_text = json.dumps(ai_text)
+                
+                conversation_entry = [
+                    {
+                        "role": "user", 
+                        "message": request.text, 
+                        "timestamp": str(time.time())
+                    },
+                    {
+                        "role": "ai", 
+                        "message": ai_text, 
+                        "timestamp": str(time.time())
+                    }
+                ]
+                
+                await mongodb.add_message_to_voice_session(session_id, conversation_entry)
+                
+        except Exception as e:
+            logger.warning(f"Could not log command to DB: {e}")
+            
+        return {
+            "success": True,
+            "result": result,
+            "session_id": session_id 
+        }
+        
+    except Exception as e:
+        logger.error(f"Voice command processing error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to process command: {str(e)}")
 
 
 
@@ -316,8 +466,8 @@ async def _transcribe_audio_with_groq(audio_file_path: str) -> str:
         return f"I couldn't transcribe the audio clearly. Error: {str(e)}. Please try speaking more clearly or check your microphone."
 
 
-async def _get_groq_response(system_prompt: str, user_message: str) -> str:
-    """Get AI response using Groq API"""
+async def _get_groq_response(system_prompt: str, user_message: str, history: list = None) -> str:
+    """Get AI response using Groq API with conversation history, falling back to OpenRouter on rate limit"""
     try:
         if not settings.has_real_groq_key():
             # Demo responses
@@ -326,29 +476,81 @@ async def _get_groq_response(system_prompt: str, user_message: str) -> str:
                 f"I've analyzed your input: '{user_message}'. This could be related to various factors. I suggest monitoring your symptoms and seeking medical attention if they worsen.",
                 f"Regarding '{user_message}', it's important to consider lifestyle factors like stress, sleep, and diet. Please consult with a doctor for a proper evaluation."
             ]
-            
             import random
             return random.choice(demo_responses)
         
-        from groq import Groq
+        from groq import Groq, RateLimitError
         
         client = Groq(api_key=settings.groq_api_key)
         
-        response = client.chat.completions.create(
-            model=settings.groq_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            max_tokens=500,
-            temperature=0.7
-        )
+        messages = [{"role": "system", "content": system_prompt}]
         
-        return response.choices[0].message.content
+        # Add history if provided
+        if history:
+            for msg in history:
+                role = "assistant" if msg.get("role") == "ai" else "user"
+                content = msg.get("message", "")
+                if content:
+                    messages.append({"role": role, "content": content})
+                    
+        messages.append({"role": "user", "content": user_message})
         
+        try:
+            response = client.chat.completions.create(
+                model=settings.groq_model,
+                messages=messages,
+                max_tokens=500,
+                temperature=0.7
+            )
+            return response.choices[0].message.content
+            
+        except RateLimitError as e:
+            logger.warning(f"Groq Rate Limit exceeded: {e}. Switching to OpenRouter fallback...")
+            return await _get_openrouter_response(messages)
+            
     except Exception as e:
         logger.error(f"Groq API error: {e}")
+        # Try fallback for other errors too if appropriate, but primarily for rate limits
+        if "429" in str(e) or "Rate limit" in str(e):
+             return await _get_openrouter_response(messages)
+             
         return f"I understand your concern about '{user_message}'. Please consult with a healthcare professional for proper medical advice."
+
+async def _get_openrouter_response(messages: list) -> str:
+    """Get AI response using OpenRouter (Fallback) via direct HTTP request"""
+    try:
+        import httpx
+        
+        headers = {
+            "Authorization": f"Bearer {settings.openrouter_api_key}",
+            "HTTP-Referer": "https://healthsync.ai",
+            "X-Title": "HealthSync AI",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": settings.openrouter_model,
+            "messages": messages,
+            "max_tokens": 500,
+            "temperature": 0.7
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=30.0
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            logger.info("Successfully used OpenRouter fallback (via HTTP).")
+            return result["choices"][0]["message"]["content"]
+        
+    except Exception as e:
+        logger.error(f"OpenRouter Fallback error: {e}")
+        return "I apologize, but I am currently experiencing high traffic. Please try again in a moment."
 
 
 @router.post("/test-upload")
@@ -381,10 +583,23 @@ async def test_audio_upload(
 
 @router.get("/session/{session_id}")
 async def get_voice_session(session_id: str):
-    """Get voice session details"""
+    """Get voice session details from MongoDB"""
     try:
-        # In a real implementation, you'd fetch from database
-        # For now, return a basic response
+        # Try to fetch from MongoDB
+        try:
+            mongodb = await get_mongodb_service()
+            if mongodb.client:
+                session = await mongodb.get_voice_session(session_id)
+                if session:
+                    return {
+                        "success": True,
+                        "session": session,
+                        "storage": "mongodb"
+                    }
+        except Exception as e:
+            logger.warning(f"Could not fetch from MongoDB: {e}")
+        
+        # Fallback to demo response
         return {
             "success": True,
             "session": {
@@ -399,3 +614,30 @@ async def get_voice_session(session_id: str):
     except Exception as e:
         logger.error(f"Get voice session error: {e}")
         raise HTTPException(status_code=500, detail="Failed to get session")
+
+
+@router.get("/user-sessions/{user_id}")
+async def get_user_voice_sessions(user_id: str, limit: int = 20):
+    """Get all voice sessions for a user"""
+    try:
+        sessions = []
+        
+        # Try to fetch from MongoDB
+        try:
+            mongodb = await get_mongodb_service()
+            if mongodb.client:
+                sessions = await mongodb.get_user_voice_sessions(user_id, limit)
+                logger.info(f"Found {len(sessions)} voice sessions for user {user_id}")
+        except Exception as e:
+            logger.warning(f"Could not fetch sessions from MongoDB: {e}")
+        
+        return {
+            "success": True,
+            "sessions": sessions,
+            "count": len(sessions),
+            "user_id": user_id
+        }
+        
+    except Exception as e:
+        logger.error(f"Get user voice sessions error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get user sessions")

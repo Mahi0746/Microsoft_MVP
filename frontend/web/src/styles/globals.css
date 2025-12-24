@@ -284,3 +284,65 @@ a {
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+
+/* Form Elements - Dark Theme */
+input, textarea, select {
+  @apply bg-dark-bg-tertiary border border-dark-border-primary rounded-lg;
+  @apply text-dark-text-primary placeholder-dark-text-tertiary;
+  @apply focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent;
+}
+
+input[type="checkbox"], input[type="radio"] {
+  @apply accent-primary-500;
+}
+
+select {
+  @apply appearance-none cursor-pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%239CA3AF'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 1rem;
+  padding-right: 2.5rem;
+}
+
+/* Modal Dark Theme */
+.modal-overlay {
+  @apply fixed inset-0 bg-black/60 backdrop-blur-sm z-50;
+}
+
+.modal-content {
+  @apply bg-dark-bg-card border border-dark-border-primary rounded-2xl shadow-2xl;
+}
+
+/* Toast / Notification Dark Theme */
+.toast {
+  @apply bg-dark-bg-card border border-dark-border-primary text-dark-text-primary;
+  @apply rounded-lg shadow-xl;
+}
+
+/* Table Dark Theme */
+table {
+  @apply w-full text-dark-text-primary;
+}
+
+th {
+  @apply bg-dark-bg-tertiary text-dark-text-secondary font-semibold;
+  @apply border-b border-dark-border-primary;
+}
+
+td {
+  @apply border-b border-dark-border-primary;
+}
+
+tr:hover {
+  @apply bg-dark-bg-hover;
+}
+
+/* Dropdown Dark Theme */
+.dropdown-menu {
+  @apply bg-dark-bg-card border border-dark-border-primary rounded-lg shadow-xl;
+}
+
+.dropdown-item {
+  @apply px-4 py-2 text-dark-text-primary hover:bg-dark-bg-hover cursor-pointer;
+}

@@ -1,7 +1,7 @@
 # HealthSync AI - Authentication Routes
 from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import APIRouter, HTTPException, status, Depends, Request
+from fastapi import APIRouter, HTTPException, status, Depends, Request, Response
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel, EmailStr, validator
 import structlog
@@ -112,6 +112,23 @@ class TokenResponse(BaseModel):
     expires_in: int
 
 
+class UserData(BaseModel):
+    id: str
+    email: str
+    role: str
+    firstName: str
+    lastName: str
+
+
+class AuthResponse(BaseModel):
+    """Response model that includes tokens and user data for frontend."""
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: UserData
+
+
 class UserResponse(BaseModel):
     id: str
     email: str
@@ -127,9 +144,9 @@ class UserResponse(BaseModel):
 # AUTHENTICATION ROUTES
 # =============================================================================
 
-@router.post("/signup", response_model=TokenResponse)
+@router.post("/signup", response_model=AuthResponse)
 @rate_limit_general
-async def signup_user(request: Request, user_data: UserSignupRequest):
+async def signup_user(request: Request, response: Response, user_data: UserSignupRequest):
     """Register a new user account."""
     
     try:
@@ -175,6 +192,24 @@ async def signup_user(request: Request, user_data: UserSignupRequest):
         access_token = create_access_token(token_data)
         refresh_token = create_refresh_token(token_data)
         
+        # Set HTTP-only cookies for persistent login
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            secure=settings.environment == "production",
+            samesite="lax",
+            max_age=settings.jwt_access_token_expire_minutes * 60
+        )
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            httponly=True,
+            secure=settings.environment == "production",
+            samesite="lax",
+            max_age=settings.jwt_refresh_token_expire_days * 24 * 60 * 60
+        )
+        
         logger.info(
             "User registered successfully",
             user_id=user_id,
@@ -182,10 +217,17 @@ async def signup_user(request: Request, user_data: UserSignupRequest):
             role=user_data.role
         )
         
-        return TokenResponse(
+        return AuthResponse(
             access_token=access_token,
             refresh_token=refresh_token,
-            expires_in=settings.jwt_access_token_expire_minutes * 60
+            expires_in=settings.jwt_access_token_expire_minutes * 60,
+            user=UserData(
+                id=user_id,
+                email=user_data.email,
+                role=user_data.role,
+                firstName=user_data.first_name,
+                lastName=user_data.last_name
+            )
         )
         
     except HTTPException:
@@ -294,9 +336,9 @@ async def signup_doctor(request: Request, doctor_data: DoctorSignupRequest):
         )
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=AuthResponse)
 @rate_limit_general
-async def login_user(request: Request, login_data: UserLoginRequest):
+async def login_user(request: Request, response: Response, login_data: UserLoginRequest):
     """Authenticate user and return tokens."""
     
     try:
@@ -327,32 +369,58 @@ async def login_user(request: Request, login_data: UserLoginRequest):
             )
         
         # Generate tokens
+        user_id = str(user.get("user_id") or user.get("_id"))
         token_data = {
-            "sub": str(user.get("user_id") or user.get("_id")),
+            "sub": user_id,
             "email": user["email"],
             "role": user["role"]
         }
         access_token = create_access_token(token_data)
         refresh_token = create_refresh_token(token_data)
         
+        # Set HTTP-only cookies for persistent login
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            secure=settings.environment == "production",
+            samesite="lax",
+            max_age=settings.jwt_access_token_expire_minutes * 60
+        )
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            httponly=True,
+            secure=settings.environment == "production",
+            samesite="lax",
+            max_age=settings.jwt_refresh_token_expire_days * 24 * 60 * 60
+        )
+        
         # Update last login
         await DatabaseService.mongodb_update_one(
             "users",
-            {"user_id": user.get("user_id") or user.get("_id")},
+            {"user_id": user_id},
             {"$set": {"updated_at": datetime.utcnow(), "last_login": datetime.utcnow()}}
         )
         
         logger.info(
             "User logged in successfully",
-            user_id=str(user.get("user_id") or user.get("_id")),
+            user_id=user_id,
             email=user["email"],
             role=user["role"]
         )
         
-        return TokenResponse(
+        return AuthResponse(
             access_token=access_token,
             refresh_token=refresh_token,
-            expires_in=settings.jwt_access_token_expire_minutes * 60
+            expires_in=settings.jwt_access_token_expire_minutes * 60,
+            user=UserData(
+                id=user_id,
+                email=user["email"],
+                role=user["role"],
+                firstName=user.get("first_name", ""),
+                lastName=user.get("last_name", "")
+            )
         )
         
     except HTTPException:
@@ -591,12 +659,13 @@ async def change_password(
 
 
 @router.post("/logout")
-async def logout_user(request: Request, current_user: dict = Depends(get_current_user)):
-    """Logout user (invalidate tokens)."""
+async def logout_user(request: Request, response: Response, current_user: dict = Depends(get_current_user)):
+    """Logout user (invalidate tokens and clear cookies)."""
     
     try:
-        # In a production system, you would add the token to a blacklist
-        # For now, we'll just log the logout event
+        # Clear authentication cookies
+        response.delete_cookie(key="access_token")
+        response.delete_cookie(key="refresh_token")
         
         logger.info("User logged out", user_id=current_user["user_id"])
         

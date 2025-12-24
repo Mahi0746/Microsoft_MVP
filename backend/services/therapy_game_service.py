@@ -10,7 +10,7 @@ import mediapipe as mp
 from dataclasses import dataclass
 from enum import Enum
 
-from config import settings
+from config_flexible import settings
 from services.db_service import DatabaseService
 from services.ai_service import AIService
 

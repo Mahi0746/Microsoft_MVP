@@ -5,15 +5,75 @@ from fastapi import APIRouter, HTTPException, status, Depends, Request
 from pydantic import BaseModel, validator
 import structlog
 
-from config import settings
+from config_flexible import settings
 from api.middleware.auth import get_current_user
 from api.middleware.rate_limit import rate_limit_general, rate_limit_image
 from services.therapy_game_service import TherapyGameService, ExerciseType, DifficultyLevel
 from services.db_service import DatabaseService
-
+from services.dungeon_master_service import DungeonMasterService, DungeonMasterState
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
+
+# =============================================================================
+# ADAPTIVE GAME ROUTES (LangGraph)
+# =============================================================================
+
+class AdventureRequest(BaseModel):
+    user_id: str
+    game_type: str = "shoulder_rehabilitation"
+    difficulty: int = 3
+    last_score: Optional[int] = None
+    express_mode: bool = False
+
+@router.post("/therapy-game/start-adventure")
+async def start_adventure(
+    request: AdventureRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Start a new LangGraph-based adaptive adventure."""
+    state = {
+        "user_id": current_user["user_id"],
+        "session_id": f"adv_{int(datetime.utcnow().timestamp())}",
+        "game_type": request.game_type,
+        "difficulty_level": request.difficulty,
+        "fatigue": 0,
+        "narrative_history": [],
+        "current_exercise": {},
+        "last_performance_score": None,
+        "messages": [],
+        "express_mode": request.express_mode
+    }
+    
+    result = await DungeonMasterService.run_turn(state)
+    return result
+
+@router.post("/therapy-game/next-turn")
+async def next_adventure_turn(
+    request: AdventureRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Play the next turn in the adventure."""
+    
+    # In a real app, we'd load state from DB. Here we reconstruct/mock for MVP
+    # assuming frontend sends necessary context or we just treat it as a continuous loop.
+    # We'll trust the request params for now.
+    
+    state = {
+        "user_id": current_user["user_id"],
+        "session_id": "active_session", 
+        "game_type": request.game_type,
+        "difficulty_level": request.difficulty,
+        "fatigue": 0, # Should load from DB
+        "narrative_history": [], # Should load from DB
+        "current_exercise": {},
+        "last_performance_score": request.last_score,
+        "messages": [],
+        "express_mode": request.express_mode
+    }
+    
+    result = await DungeonMasterService.run_turn(state)
+    return result
 
 
 # =============================================================================

@@ -65,6 +65,10 @@ class FlexibleSettings(BaseSettings):
     # OpenAI (optional)
     openai_api_key: Optional[str] = None
     
+    # OpenRouter (Fallback)
+    openrouter_api_key: str = "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"
+    openrouter_model: str = "xiaomi/mimo-v2-flash:free"
+    
     # =============================================================================
     # EXTERNAL SERVICES (WITH DEMO DEFAULTS)
     # =============================================================================
