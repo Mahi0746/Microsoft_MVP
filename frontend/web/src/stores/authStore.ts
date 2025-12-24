@@ -1,11 +1,7 @@
 // HealthSync AI - Web Authentication Store
 import { create } from 'zustand';
-import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 interface User {
   id: string;
@@ -39,42 +35,53 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ isLoading: true, error: null });
     
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+      const response = await fetch(`${API_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email, password }),
       });
 
-      if (error) {
-        set({ error: error.message, isLoading: false });
+      if (!response.ok) {
+        const errorData = await response.json();
+        set({ error: errorData.detail || errorData.message || 'Login failed', isLoading: false });
         return false;
       }
 
-      if (data.user) {
-        // Get user profile
-        const { data: profile } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', data.user.id)
-          .single();
+      const tokenData = await response.json();
+      
+      // Store tokens
+      localStorage.setItem('token', tokenData.access_token);
+      localStorage.setItem('refresh_token', tokenData.refresh_token);
+      
+      // Get user profile
+      const profileResponse = await fetch(`${API_URL}/api/auth/me`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${tokenData.access_token}`,
+          'Content-Type': 'application/json',
+        },
+      });
 
-        if (profile) {
-          const user: User = {
-            id: profile.id,
-            email: profile.email,
-            role: profile.role,
-            firstName: profile.first_name,
-            lastName: profile.last_name,
-            isActive: profile.is_active,
-          };
+      if (profileResponse.ok) {
+        const userProfile = await profileResponse.json();
+        const user: User = {
+          id: userProfile.id,
+          email: userProfile.email,
+          role: userProfile.role,
+          firstName: userProfile.first_name,
+          lastName: userProfile.last_name,
+          isActive: userProfile.is_active,
+        };
 
-          set({
-            user,
-            isAuthenticated: true,
-            isLoading: false,
-            error: null,
-          });
-          return true;
-        }
+        set({
+          user,
+          isAuthenticated: true,
+          isLoading: false,
+          error: null,
+        });
+        return true;
       }
 
       set({ error: 'Login failed', isLoading: false });
@@ -86,7 +93,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
-    await supabase.auth.signOut();
+    localStorage.removeItem('token');
+    localStorage.removeItem('refresh_token');
     set({
       user: null,
       isAuthenticated: false,
@@ -98,23 +106,26 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ isLoading: true });
     
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const token = localStorage.getItem('token');
       
-      if (session?.user) {
-        const { data: profile } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', session.user.id)
-          .single();
+      if (token) {
+        const profileResponse = await fetch(`${API_URL}/api/auth/me`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
 
-        if (profile) {
+        if (profileResponse.ok) {
+          const userProfile = await profileResponse.json();
           const user: User = {
-            id: profile.id,
-            email: profile.email,
-            role: profile.role,
-            firstName: profile.first_name,
-            lastName: profile.last_name,
-            isActive: profile.is_active,
+            id: userProfile.id,
+            email: userProfile.email,
+            role: userProfile.role,
+            firstName: userProfile.first_name,
+            lastName: userProfile.last_name,
+            isActive: userProfile.is_active,
           };
 
           set({

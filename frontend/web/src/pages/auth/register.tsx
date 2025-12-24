@@ -5,7 +5,7 @@ import { useAuth } from '../../contexts/AuthContext';
 
 const RegisterPage: React.FC = () => {
   const router = useRouter();
-  const { login } = useAuth();
+  const { login, setSession } = useAuth();
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
@@ -71,6 +71,13 @@ const RegisterPage: React.FC = () => {
       return;
     }
 
+    // Ensure password byte-length <= 72 (bcrypt limitation)
+    if (new TextEncoder().encode(formData.password).length > 72) {
+      setError('Password must be at most 72 bytes when UTF-8 encoded (bcrypt limitation)');
+      setLoading(false);
+      return;
+    }
+
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
       const requestBody = {
@@ -118,12 +125,18 @@ const RegisterPage: React.FC = () => {
 
       if (profileResponse.ok) {
         const userProfile = await profileResponse.json();
-        // Auto-login after successful registration
-        const loginSuccess = await login(formData.email, formData.password);
-        if (loginSuccess) {
+        // Prefer directly setting the session in AuthContext to avoid re-calling login
+        if (setSession) {
+          setSession({ access_token: tokenData.access_token, refresh_token: tokenData.refresh_token }, userProfile);
           router.push('/dashboard');
         } else {
-          setError('Registration successful but login failed. Please try logging in manually.');
+          // Fallback: perform a normal login
+          const loginSuccess = await login(formData.email, formData.password);
+          if (loginSuccess) {
+            router.push('/dashboard');
+          } else {
+            setError('Registration successful but login failed. Please try logging in manually.');
+          }
         }
       } else {
         setError('Registration successful but failed to get user profile. Please try logging in manually.');
@@ -230,6 +243,7 @@ const RegisterPage: React.FC = () => {
                   name="password"
                   type="password"
                   required
+                  maxLength={72}
                   value={formData.password}
                   onChange={handleInputChange}
                   className="w-full px-4 py-3 bg-dark-bg-tertiary border border-dark-border-primary rounded-xl text-dark-text-primary placeholder-dark-text-secondary focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
@@ -245,6 +259,7 @@ const RegisterPage: React.FC = () => {
                   name="confirmPassword"
                   type="password"
                   required
+                  maxLength={72}
                   value={formData.confirmPassword}
                   onChange={handleInputChange}
                   className="w-full px-4 py-3 bg-dark-bg-tertiary border border-dark-border-primary rounded-xl text-dark-text-primary placeholder-dark-text-secondary focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"

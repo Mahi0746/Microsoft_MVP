@@ -23,11 +23,13 @@ const ARScannerPage: React.FC = () => {
 
   const fetchRecentScans = async () => {
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const response = await fetch(`${apiUrl}/api/ar-scanner/user-scans?user_id=${user?.id || 'demo_user'}`);
-      const data = await response.json();
-      if (data.success) {
-        setRecentScans(data.scans);
+      try {
+        const api = await import('../utils/apiClient');
+        const data = await api.default.get('/api/ar-scanner/history');
+        if (Array.isArray(data)) setRecentScans(data);
+        else if (data && data.scans) setRecentScans(data.scans);
+      } catch (err) {
+        console.error('Failed to fetch scans:', err);
       }
     } catch (error) {
       console.error('Failed to fetch scans:', error);
@@ -53,16 +55,15 @@ const ARScannerPage: React.FC = () => {
       formData.append('user_id', user?.id || 'demo_user');
       formData.append('document_type', documentType);
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const response = await fetch(`${apiUrl}/api/ar-scanner/scan-document`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      const data = await response.json();
-      if (data.success) {
-        setScanResult(data);
-        fetchRecentScans(); // Refresh the list
+      try {
+        const api = await import('../utils/apiClient');
+        const data = await api.default.post('/api/ar-scanner/scan', formData, true);
+        if (data.success) {
+          setScanResult(data);
+          fetchRecentScans(); // Refresh the list
+        }
+      } catch (error) {
+        console.error('Scan failed:', error);
       }
     } catch (error) {
       console.error('Scan failed:', error);

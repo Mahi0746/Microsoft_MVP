@@ -1,5 +1,6 @@
 // HealthSync AI - Authentication Context
 import { createContext, useContext, useEffect, ReactNode, useState } from 'react';
+import { useAuthStore } from '../stores/authStore';
 
 interface User {
   id: string;
@@ -14,6 +15,8 @@ interface AuthContextType {
   loading: boolean;
   login: (email: string, password: string) => Promise<boolean>;
   logout: () => void;
+  // Allows setting session directly with tokens and profile (used after signup)
+  setSession?: (tokenData: { access_token: string; refresh_token: string }, userProfile: any) => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -31,6 +34,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const { initialize } = useAuthStore();
+
   useEffect(() => {
     // Check for existing session
     const token = localStorage.getItem('token');
@@ -47,6 +52,34 @@ export function AuthProvider({ children }: AuthProviderProps) {
     
     setLoading(false);
   }, []);
+
+  // Set session directly with tokens and user profile
+  const setSession = (tokenData: { access_token: string; refresh_token: string }, userProfile: any) => {
+    try {
+      localStorage.setItem('token', tokenData.access_token);
+      localStorage.setItem('refresh_token', tokenData.refresh_token);
+
+      const userData = {
+        id: userProfile.id,
+        email: userProfile.email,
+        role: userProfile.role,
+        firstName: userProfile.first_name,
+        lastName: userProfile.last_name,
+      };
+
+      setUser(userData);
+      localStorage.setItem('user', JSON.stringify(userData));
+
+      // Ensure zustand store is initialized so the rest of the app sees auth state
+      try {
+        initialize();
+      } catch (err) {
+        console.warn('Failed to initialize auth store after setSession:', err);
+      }
+    } catch (err) {
+      console.error('Failed to set session:', err);
+    }
+  };
 
   const login = async (email: string, password: string): Promise<boolean> => {
     try {
@@ -109,7 +142,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, setSession }}>
       {children}
     </AuthContext.Provider>
   );

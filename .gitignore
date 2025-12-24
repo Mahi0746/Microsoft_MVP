@@ -88,6 +88,7 @@ checkpoints/
 Thumbs.db
 .venv/
 venv/
+venv_mahi_new_health/
 env/
 ENV/
 

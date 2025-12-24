@@ -6,6 +6,19 @@
 
 HealthSync AI is a comprehensive healthcare platform that combines artificial intelligence, augmented reality, and modern web technologies to revolutionize healthcare delivery. This MVP includes 12 major features spanning patient care, doctor services, and health management.
 
+## ⚡ Quick Start
+
+**Want to get started in 5 minutes?** See [QUICKSTART.md](QUICKSTART.md)
+
+**For automated setup on Windows:**
+```bash
+# Run the setup script
+SETUP.bat
+
+# Then start the application
+START.bat
+```
+
 ## ✨ Features
 
 ### 🤖 Core AI Services
@@ -29,10 +42,9 @@ HealthSync AI is a comprehensive healthcare platform that combines artificial in
 
 ### Backend Stack
 - **FastAPI**: High-performance Python web framework
-- **PostgreSQL**: Primary database for structured data
-- **MongoDB**: Document storage for unstructured data
-- **Redis**: Caching and session management
-- **Supabase**: Authentication and real-time features
+- **MongoDB**: Primary database for all data storage
+- **Redis**: Caching and session management (optional)
+- **JWT**: Secure token-based authentication
 
 ### Frontend Stack
 - **React Native/Expo**: Mobile application framework

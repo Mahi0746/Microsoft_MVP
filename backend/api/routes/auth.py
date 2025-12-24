@@ -19,7 +19,11 @@ from services.db_service import DatabaseService
 logger = structlog.get_logger(__name__)
 router = APIRouter()
 security = HTTPBearer()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(
+    schemes=["argon2", "bcrypt"],
+    default="argon2",
+    deprecated="auto",
+)
 
 
 # =============================================================================
@@ -50,7 +54,7 @@ class UserSignupRequest(BaseModel):
     
     @validator('role')
     def validate_role(cls, v):
-        allowed_roles = ['patient', 'doctor']
+        allowed_roles = ['patient', 'doctor', 'admin']
         if v not in allowed_roles:
             raise ValueError(f'Role must be one of: {", ".join(allowed_roles)}')
         return v
@@ -128,16 +132,21 @@ class UserResponse(BaseModel):
 # =============================================================================
 
 @router.post("/signup", response_model=TokenResponse)
-@rate_limit_general
+# @rate_limit_general  # Temporarily disabled
 async def signup_user(request: Request, user_data: UserSignupRequest):
     """Register a new user account."""
     
+    logger.info("Signup request received", email=user_data.email)
+    
     try:
+        logger.info("Checking if user exists", email=user_data.email)
         # Check if user already exists
         existing_user = await DatabaseService.mongodb_find_one(
             "users",
             {"email": user_data.email}
         )
+        
+        logger.info("User existence check completed", email=user_data.email, exists=bool(existing_user))
         
         if existing_user:
             raise HTTPException(
@@ -145,12 +154,17 @@ async def signup_user(request: Request, user_data: UserSignupRequest):
                 detail="User with this email already exists"
             )
         
-        # Hash password
+        logger.info("Hashing password", email=user_data.email)
+        # Use Argon2 (preferred) or bcrypt (fallback) via passlib CryptContext
         hashed_password = pwd_context.hash(user_data.password)
+        
+        logger.info("Creating user document", email=user_data.email)
         
         # Create user record in MongoDB
         import uuid
         user_id = str(uuid.uuid4())
+        
+        logger.info("Generated user ID", user_id=user_id, email=user_data.email)
         
         user_document = {
             "_id": user_id,
@@ -168,7 +182,10 @@ async def signup_user(request: Request, user_data: UserSignupRequest):
             "updated_at": datetime.utcnow()
         }
         
+        logger.info("Inserting user into MongoDB", user_id=user_id, email=user_data.email)
         await DatabaseService.mongodb_insert_one("users", user_document)
+        
+        logger.info("User inserted successfully, generating tokens", user_id=user_id, email=user_data.email)
         
         # Generate tokens
         token_data = {"sub": user_id, "email": user_data.email, "role": user_data.role}
@@ -190,11 +207,20 @@ async def signup_user(request: Request, user_data: UserSignupRequest):
         
     except HTTPException:
         raise
+    except ValueError as e:
+        # Validation errors from password length or manual checks
+        logger.warning("User registration validation failed", error=str(e), email=user_data.email)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except Exception as e:
-        logger.error("User registration failed", error=str(e), email=user_data.email)
+        logger.error("User registration failed", error=str(e), email=user_data.email, exc_info=True)
+        # Expose error message in development to aid debugging
+        detail_msg = str(e) if settings.is_development else "Registration failed"
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Registration failed"
+            detail=detail_msg
         )
 
 
@@ -325,6 +351,19 @@ async def login_user(request: Request, login_data: UserLoginRequest):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password"
             )
+
+        # If the stored hash uses an old/weak scheme, upgrade it transparently
+        try:
+            if pwd_context.needs_update(user.get("password_hash", "")):
+                new_hash = pwd_context.hash(login_data.password)
+                await DatabaseService.mongodb_update_one(
+                    "users",
+                    {"user_id": user.get("user_id") or user.get("_id")},
+                    {"$set": {"password_hash": new_hash}}
+                )
+                logger.info("Upgraded password hash to preferred scheme", user_id=str(user.get("user_id") or user.get("_id")))
+        except Exception as e:
+            logger.warning("Failed to upgrade password hash", error=str(e), user_id=str(user.get("user_id") or user.get("_id")))
         
         # Generate tokens
         token_data = {

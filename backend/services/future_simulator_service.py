@@ -16,10 +16,15 @@ from config import settings
 from services.db_service import DatabaseService
 from services.ai_service import AIService
 from services.ml_service import MLModelService
-from services.supabase_service import SupabaseService
+import os
+from pathlib import Path
 
 
 logger = structlog.get_logger(__name__)
+
+# Create uploads directory for local file storage
+UPLOADS_DIR = Path(__file__).parent.parent / "uploads" / "future_sim"
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class FutureSimulatorService:
@@ -150,54 +155,43 @@ class FutureSimulatorService:
             
             # Generate unique filename
             image_hash = hashlib.md5(image_data).hexdigest()
-            filename = f"future_sim/{user_id}/{image_hash}_{int(datetime.now().timestamp())}.jpg"
+            timestamp = int(datetime.now().timestamp())
+            relative_path = f"{user_id}/{image_hash}_{timestamp}.jpg"
             
-            # Upload to Supabase Storage
-            upload_result = await SupabaseService.upload_file(
-                bucket="user-images",
-                file_path=filename,
-                file_data=image_data,
-                content_type="image/jpeg"
-            )
+            # Save to local storage
+            user_dir = UPLOADS_DIR / user_id
+            user_dir.mkdir(parents=True, exist_ok=True)
             
-            if upload_result.get("error"):
-                return {"error": f"Upload failed: {upload_result['error']}"}
+            file_path = user_dir / f"{image_hash}_{timestamp}.jpg"
+            with open(file_path, "wb") as f:
+                f.write(image_data)
             
-            # Generate signed URL (expires in 1 hour)
-            signed_url = await SupabaseService.get_signed_url(
-                bucket="user-images",
-                file_path=filename,
-                expires_in=3600
-            )
+            # Generate local URL
+            local_url = f"/uploads/future_sim/{relative_path}"
             
-            # Store image metadata
-            image_record = await DatabaseService.execute_query(
-                """
-                INSERT INTO user_images (user_id, file_path, original_filename, 
-                                       file_size, content_type, purpose, created_at)
-                VALUES ($1, $2, $3, $4, $5, 'future_simulation', NOW())
-                RETURNING id
-                """,
-                user_id,
-                filename,
-                f"future_sim_{int(datetime.now().timestamp())}.jpg",
-                len(image_data),
-                content_type,
-                fetch_one=True
-            )
+            # Store image metadata in MongoDB
+            image_record = await DatabaseService.mongodb_insert_one("user_images", {
+                "user_id": user_id,
+                "file_path": relative_path,
+                "original_filename": f"future_sim_{timestamp}.jpg",
+                "file_size": len(image_data),
+                "content_type": "image/jpeg",
+                "purpose": "future_simulation",
+                "created_at": datetime.now()
+            })
             
             logger.info(
                 "Image uploaded and validated successfully",
                 user_id=user_id,
-                image_id=image_record["id"],
+                image_id=str(image_record.inserted_id),
                 file_size=len(image_data)
             )
             
             return {
                 "success": True,
-                "image_id": image_record["id"],
-                "file_path": filename,
-                "signed_url": signed_url,
+                "image_id": str(image_record.inserted_id),
+                "file_path": relative_path,
+                "signed_url": local_url,
                 "file_size": len(image_data),
                 "dimensions": f"{width}x{height}"
             }
@@ -253,15 +247,12 @@ class FutureSimulatorService:
         """Generate age progression using AI models."""
         
         try:
-            # Get image from Supabase
-            image_url = await SupabaseService.get_signed_url(
-                bucket="user-images",
-                file_path=image_path,
-                expires_in=3600
-            )
+            # Get image from local storage
+            full_path = UPLOADS_DIR / image_path
+            if not full_path.exists():
+                return {"error": "Original image not found"}
             
-            if not image_url:
-                return {"error": "Failed to access original image"}
+            image_url = f"/uploads/future_sim/{image_path}"
             
             # Determine age progression prompt
             if current_age:
@@ -368,30 +359,24 @@ class FutureSimulatorService:
                 response.raise_for_status()
                 aged_image_data = response.content
             
-            # Upload aged image to Supabase
-            aged_filename = f"future_sim/{user_id}/aged_{int(datetime.now().timestamp())}.jpg"
+            # Save aged image to local storage
+            timestamp = int(datetime.now().timestamp())
+            relative_path = f"{user_id}/aged_{timestamp}.jpg"
             
-            upload_result = await SupabaseService.upload_file(
-                bucket="user-images",
-                file_path=aged_filename,
-                file_data=aged_image_data,
-                content_type="image/jpeg"
-            )
+            user_dir = UPLOADS_DIR / user_id
+            user_dir.mkdir(parents=True, exist_ok=True)
             
-            if upload_result.get("error"):
-                return {"error": f"Failed to save aged image: {upload_result['error']}"}
+            aged_file_path = user_dir / f"aged_{timestamp}.jpg"
+            with open(aged_file_path, "wb") as f:
+                f.write(aged_image_data)
             
-            # Generate signed URL for aged image
-            aged_signed_url = await SupabaseService.get_signed_url(
-                bucket="user-images",
-                file_path=aged_filename,
-                expires_in=3600
-            )
+            # Generate local URL for aged image
+            aged_local_url = f"/uploads/future_sim/{relative_path}"
             
             return {
                 "success": True,
-                "aged_image_path": aged_filename,
-                "aged_image_url": aged_signed_url
+                "aged_image_path": relative_path,
+                "aged_image_url": aged_local_url
             }
             
         except Exception as e:
@@ -435,32 +420,26 @@ class FutureSimulatorService:
             aged_image.save(output, format='JPEG', quality=85)
             aged_image_data = output.getvalue()
             
-            # Upload fallback aged image
-            aged_filename = f"future_sim/{user_id}/aged_fallback_{int(datetime.now().timestamp())}.jpg"
+            # Save fallback aged image to local storage
+            timestamp = int(datetime.now().timestamp())
+            relative_path = f"{user_id}/aged_fallback_{timestamp}.jpg"
             
-            upload_result = await SupabaseService.upload_file(
-                bucket="user-images",
-                file_path=aged_filename,
-                file_data=aged_image_data,
-                content_type="image/jpeg"
-            )
+            user_dir = UPLOADS_DIR / user_id
+            user_dir.mkdir(parents=True, exist_ok=True)
             
-            if upload_result.get("error"):
-                return {"error": "Failed to create fallback aged image"}
+            aged_file_path = user_dir / f"aged_fallback_{timestamp}.jpg"
+            with open(aged_file_path, "wb") as f:
+                f.write(aged_image_data)
             
-            # Generate signed URL
-            aged_signed_url = await SupabaseService.get_signed_url(
-                bucket="user-images",
-                file_path=aged_filename,
-                expires_in=3600
-            )
+            # Generate local URL
+            aged_local_url = f"/uploads/future_sim/{relative_path}"
             
             logger.info("Fallback aged image created", user_id=user_id)
             
             return {
                 "success": True,
-                "aged_image_path": aged_filename,
-                "aged_image_url": aged_signed_url,
+                "aged_image_path": relative_path,
+                "aged_image_url": aged_local_url,
                 "fallback": True
             }
             
@@ -1109,23 +1088,15 @@ class FutureSimulatorService:
             
             result = []
             for sim in simulations:
-                # Generate signed URLs for images
+                # Generate local URLs for images
                 original_url = None
                 aged_url = None
                 
                 if sim["original_image_path"]:
-                    original_url = await SupabaseService.get_signed_url(
-                        bucket="user-images",
-                        file_path=sim["original_image_path"],
-                        expires_in=3600
-                    )
+                    original_url = f"/uploads/future_sim/{sim['original_image_path']}"
                 
                 if sim["aged_image_path"]:
-                    aged_url = await SupabaseService.get_signed_url(
-                        bucket="user-images", 
-                        file_path=sim["aged_image_path"],
-                        expires_in=3600
-                    )
+                    aged_url = f"/uploads/future_sim/{sim['aged_image_path']}"
                 
                 result.append({
                     "progression_id": sim["progression_id"],

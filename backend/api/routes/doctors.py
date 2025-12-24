@@ -167,55 +167,54 @@ async def search_doctors(
     """Search for doctors based on criteria."""
     
     try:
-        # Build dynamic query
-        where_conditions = ["d.is_verified = true", "d.is_accepting_patients = true", "u.is_active = true"]
-        params = []
-        param_count = 0
-        
+        # Build MongoDB filter
+        filt = {"is_verified": True, "is_accepting_patients": True}
         if specialization:
-            param_count += 1
-            where_conditions.append(f"d.specialization ILIKE ${param_count}")
-            params.append(f"%{specialization}%")
-        
-        if max_price:
-            param_count += 1
-            where_conditions.append(f"d.base_consultation_fee <= ${param_count}")
-            params.append(max_price)
-        
-        if min_rating:
-            param_count += 1
-            where_conditions.append(f"d.rating >= ${param_count}")
-            params.append(min_rating)
-        
-        # Add limit and offset
-        param_count += 1
-        limit_param = param_count
-        param_count += 1
-        offset_param = param_count
-        params.extend([limit, offset])
-        
-        query = f"""
-            SELECT d.id, d.user_id, u.first_name, u.last_name, d.specialization,
-                   d.sub_specializations, d.years_experience, d.rating, d.total_reviews,
-                   d.base_consultation_fee, d.bio, d.languages, d.is_verified,
-                   d.is_accepting_patients
-            FROM doctors d
-            JOIN users u ON d.user_id = u.id
-            WHERE {' AND '.join(where_conditions)}
-            ORDER BY d.rating DESC, d.total_reviews DESC
-            LIMIT ${limit_param} OFFSET ${offset_param}
-        """
-        
-        doctors = await DatabaseService.execute_query(query, *params, fetch_all=True)
-        
-        return [DoctorProfile(**dict(doctor)) for doctor in doctors]
-        
+            # case-insensitive partial match
+            filt["specialization"] = {"$regex": specialization, "$options": "i"}
+        if max_price is not None:
+            filt["base_consultation_fee"] = {"$lte": float(max_price)}
+        if min_rating is not None:
+            filt["rating"] = {"$gte": float(min_rating)}
+
+        docs = await DatabaseService.mongodb_find_many(
+            "doctors",
+            filt,
+            limit=limit,
+            sort=[("rating", -1), ("total_reviews", -1)],
+        )
+
+        # Enrich with user names from users collection if present
+        results = []
+        for d in docs:
+            user = None
+            try:
+                user = await DatabaseService.mongodb_find_one("users", {"user_id": d.get("user_id")})
+            except Exception:
+                user = None
+
+            profile = {
+                "id": str(d.get("_id") or d.get("id")),
+                "user_id": d.get("user_id"),
+                "first_name": user.get("first_name") if user else d.get("first_name", ""),
+                "last_name": user.get("last_name") if user else d.get("last_name", ""),
+                "specialization": d.get("specialization", ""),
+                "sub_specializations": d.get("sub_specializations", []),
+                "years_experience": d.get("years_experience", 0),
+                "rating": float(d.get("rating", 0.0)),
+                "total_reviews": int(d.get("total_reviews", 0)),
+                "base_consultation_fee": float(d.get("base_consultation_fee", 0.0)),
+                "bio": d.get("bio"),
+                "languages": d.get("languages", []),
+                "is_verified": bool(d.get("is_verified", False)),
+                "is_accepting_patients": bool(d.get("is_accepting_patients", True)),
+            }
+            results.append(DoctorProfile(**profile))
+
+        return results
     except Exception as e:
         logger.error("Doctor search failed", error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Doctor search failed"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Doctor search failed")
 
 
 @router.post("/match-specialists")
@@ -307,36 +306,39 @@ async def get_doctor_profile(
     """Get detailed doctor profile."""
     
     try:
-        doctor = await DatabaseService.execute_query(
-            """
-            SELECT d.id, d.user_id, u.first_name, u.last_name, d.specialization,
-                   d.sub_specializations, d.years_experience, d.rating, d.total_reviews,
-                   d.base_consultation_fee, d.bio, d.languages, d.is_verified,
-                   d.is_accepting_patients
-            FROM doctors d
-            JOIN users u ON d.user_id = u.id
-            WHERE d.id = $1 AND d.is_verified = true
-            """,
-            doctor_id,
-            fetch_one=True
-        )
-        
-        if not doctor:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Doctor not found"
-            )
-        
-        return DoctorProfile(**dict(doctor))
-        
+        doc = await DatabaseService.mongodb_find_one("doctors", {"_id": doctor_id})
+        if not doc:
+            # Try finding by string id fields
+            doc = await DatabaseService.mongodb_find_one("doctors", {"id": doctor_id})
+
+        if not doc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Doctor not found")
+
+        user = await DatabaseService.mongodb_find_one("users", {"user_id": doc.get("user_id")})
+
+        profile = {
+            "id": str(doc.get("_id") or doc.get("id")),
+            "user_id": doc.get("user_id"),
+            "first_name": user.get("first_name") if user else doc.get("first_name", ""),
+            "last_name": user.get("last_name") if user else doc.get("last_name", ""),
+            "specialization": doc.get("specialization", ""),
+            "sub_specializations": doc.get("sub_specializations", []),
+            "years_experience": doc.get("years_experience", 0),
+            "rating": float(doc.get("rating", 0.0)),
+            "total_reviews": int(doc.get("total_reviews", 0)),
+            "base_consultation_fee": float(doc.get("base_consultation_fee", 0.0)),
+            "bio": doc.get("bio"),
+            "languages": doc.get("languages", []),
+            "is_verified": bool(doc.get("is_verified", False)),
+            "is_accepting_patients": bool(doc.get("is_accepting_patients", True)),
+        }
+
+        return DoctorProfile(**profile)
     except HTTPException:
         raise
     except Exception as e:
         logger.error("Failed to get doctor profile", doctor_id=doctor_id, error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get doctor profile"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get doctor profile")
 
 
 # =============================================================================

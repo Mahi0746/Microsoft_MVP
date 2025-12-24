@@ -237,7 +237,7 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 def create_limiter_with_redis():
-    """Create Slowapi limiter with Redis backend."""
+    """Create Slowapi limiter with Redis backend if available, otherwise fall back to in-memory limiter."""
     
     def get_user_id_or_ip(request: Request) -> str:
         """Get user ID or IP for rate limiting key."""
@@ -246,14 +246,28 @@ def create_limiter_with_redis():
             return request.state.user["user_id"]
         
         return get_remote_address(request)
-    
-    return Limiter(
-        key_func=get_user_id_or_ip,
-        storage_uri=settings.redis_url
-    )
+
+    # If no redis URL configured, use in-memory limiter
+    if not settings.redis_url:
+        logger.warning("No REDIS_URL configured; using in-memory rate limiter")
+        return Limiter(key_func=get_user_id_or_ip)
+
+    # Try to verify Redis is reachable before creating a Redis-backed limiter
+    try:
+        import redis as redis_sync
+        client = redis_sync.from_url(settings.redis_url)
+        client.ping()
+        logger.info("Redis reachable; using Redis-backed rate limiter")
+        return Limiter(
+            key_func=get_user_id_or_ip,
+            storage_uri=settings.redis_url
+        )
+    except Exception as e:
+        logger.warning("Redis not available for rate limiter, falling back to in-memory limiter", error=str(e))
+        return Limiter(key_func=get_user_id_or_ip)
 
 
-# Enhanced limiter with Redis
+# Enhanced limiter (Redis if available)
 redis_limiter = create_limiter_with_redis()
 
 

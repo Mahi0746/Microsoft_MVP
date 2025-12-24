@@ -5,6 +5,8 @@ import DashboardLayout from '../components/layout/DashboardLayout';
 import DashboardOverview from '../components/dashboard/DashboardOverview';
 import LoadingSpinner from '../components/ui/LoadingSpinner';
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
 const DashboardPage: React.FC = () => {
   const { user, loading } = useAuth();
   const router = useRouter();
@@ -24,15 +26,11 @@ const DashboardPage: React.FC = () => {
 
   const fetchDashboardData = async () => {
     try {
-      const response = await fetch('/api/dashboard/stats', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
-        },
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
+      try {
+        const data = await (await import('../utils/apiClient')).default.get('/api/health/metrics');
         setDashboardData(data);
+      } catch (err) {
+        console.error('Dashboard fetch error', err);
       }
     } catch (error) {
       console.error('Failed to fetch dashboard data:', error);

@@ -39,17 +39,23 @@ const MarketplacePage: React.FC = () => {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
       const queryParams = new URLSearchParams();
       
-      if (filters.specialty) queryParams.append('specialty', filters.specialty);
+      if (filters.specialty) queryParams.append('specialization', filters.specialty);
       if (filters.location) queryParams.append('location', filters.location);
       if (filters.availability) queryParams.append('availability', filters.availability);
       if (filters.maxPrice) queryParams.append('max_price', filters.maxPrice);
 
-      const response = await fetch(`${apiUrl}/api/marketplace/doctors?${queryParams}`);
-      const data = await response.json();
-      
-      if (data.success) {
-        setDoctors(data.doctors);
-        setFilteredDoctors(data.doctors);
+      try {
+        const api = await import('../utils/apiClient');
+        const data = await api.default.get(`/api/doctors/search?${queryParams}`);
+        if (Array.isArray(data)) {
+          setDoctors(data);
+          setFilteredDoctors(data);
+        } else if (data && data.doctors) {
+          setDoctors(data.doctors);
+          setFilteredDoctors(data.doctors);
+        }
+      } catch (err) {
+        console.error('Failed to fetch doctors:', err);
       }
     } catch (error) {
       console.error('Failed to fetch doctors:', error);

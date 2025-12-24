@@ -9,7 +9,7 @@ from groq import Groq
 import replicate
 import librosa
 import numpy as np
-from sklearn.externals import joblib
+import joblib
 import io
 import base64
 
@@ -40,30 +40,56 @@ class AIService:
         try:
             # Initialize Groq client
             if settings.groq_api_key:
-                cls._groq_client = Groq(api_key=settings.groq_api_key)
-                logger.info("Groq client initialized")
+                try:
+                    cls._groq_client = Groq(api_key=settings.groq_api_key)
+                    logger.info("Groq client initialized")
+                except TypeError as e:
+                    # Handle version compatibility issues
+                    logger.warning("Groq client initialization failed, trying alternative method", error=str(e))
+                    try:
+                        # Try without any extra parameters
+                        import os
+                        os.environ["GROQ_API_KEY"] = settings.groq_api_key
+                        cls._groq_client = Groq()
+                        logger.info("Groq client initialized with environment variable")
+                    except Exception as e2:
+                        logger.error("Failed to initialize Groq client", error=str(e2))
+                        cls._groq_client = None
             
             # Initialize Replicate client
             if settings.replicate_api_token:
-                replicate.Client(api_token=settings.replicate_api_token)
-                cls._replicate_client = replicate
-                logger.info("Replicate client initialized")
+                try:
+                    replicate.Client(api_token=settings.replicate_api_token)
+                    cls._replicate_client = replicate
+                    logger.info("Replicate client initialized")
+                except Exception as e:
+                    logger.warning("Replicate client initialization failed", error=str(e))
+                    cls._replicate_client = None
             
             # Initialize Hugging Face client
             if settings.huggingface_api_key:
-                cls._huggingface_client = httpx.AsyncClient(
-                    headers={"Authorization": f"Bearer {settings.huggingface_api_key}"},
-                    timeout=30.0
-                )
-                logger.info("Hugging Face client initialized")
+                try:
+                    cls._huggingface_client = httpx.AsyncClient(
+                        headers={"Authorization": f"Bearer {settings.huggingface_api_key}"},
+                        timeout=30.0
+                    )
+                    logger.info("Hugging Face client initialized")
+                except Exception as e:
+                    logger.warning("Hugging Face client initialization failed", error=str(e))
+                    cls._huggingface_client = None
             
-            # Test connections
-            await cls.health_check()
-            logger.info("All AI services verified")
+            # Test connections (optional)
+            try:
+                await cls.health_check()
+                logger.info("AI services health check completed")
+            except Exception as e:
+                logger.warning("AI services health check failed", error=str(e))
+            
+            logger.info("AI services initialization completed")
             
         except Exception as e:
-            logger.error("Failed to initialize AI services", error=str(e))
-            raise
+            logger.warning("AI services initialization had issues", error=str(e))
+            # Don't raise - allow app to start with limited AI functionality
     
     @classmethod
     async def cleanup(cls):

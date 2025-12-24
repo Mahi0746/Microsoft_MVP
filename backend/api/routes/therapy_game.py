@@ -1,7 +1,7 @@
 # HealthSync AI - Pain-to-Game Therapy Routes
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, status, Depends, Request
+from fastapi import APIRouter, HTTPException, status, Depends, Request, Body
 from pydantic import BaseModel, validator
 import structlog
 
@@ -10,6 +10,7 @@ from api.middleware.auth import get_current_user
 from api.middleware.rate_limit import rate_limit_general, rate_limit_image
 from services.therapy_game_service import TherapyGameService, ExerciseType, DifficultyLevel
 from services.db_service import DatabaseService
+from pydantic import ValidationError
 
 
 logger = structlog.get_logger(__name__)
@@ -130,11 +131,12 @@ async def start_therapy_session(
     
     try:
         # Check if therapy game is enabled
-        if not settings.enable_therapy_game:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Therapy game service is currently disabled"
-            )
+        # Commented out for hackathon demo - MediaPipe not required for basic session tracking
+        # if not settings.enable_therapy_game:
+        #     raise HTTPException(
+        #         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        #         detail="Therapy game service is currently disabled"
+        #     )
         
         # Start therapy session
         session_data = await TherapyGameService.start_therapy_session(
@@ -167,6 +169,106 @@ async def start_therapy_session(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to start therapy session"
         )
+
+
+# -----------------------
+# Legacy / Short path aliases
+# -----------------------
+
+@router.post("/start-session", response_model=SessionResponse)
+@rate_limit_general
+async def start_therapy_session_legacy(
+    request: Request,
+    payload: dict = Body(...),
+):
+    """Legacy alias for POST /session/start -> POST /start-session
+
+    Accepts looser legacy payloads used by older frontends and supports unauthenticated demo requests.
+    """
+    # Determine user (prefer authenticated user if present)
+    current_user = getattr(request.state, "user", None)
+    if not current_user:
+        # Use user_id from payload or fallback to demo_user
+        user_id = payload.get("user_id") or payload.get("user") or "demo_user"
+        current_user = {"user_id": user_id, "role": payload.get("role", "patient")}
+
+    # Log the incoming legacy payload for debugging
+    logger.info("Legacy start-session called", raw_payload=payload)
+
+    # Map legacy fields to canonical StartSessionRequest fields
+    raw_exercise = payload.get("game_type") or payload.get("exercise_type") or "shoulder_rehabilitation"
+    difficulty = payload.get("difficulty") or "beginner"
+    duration = payload.get("duration_minutes") or payload.get("duration") or 10
+    pain_level_before = payload.get("pain_level_before") or payload.get("pain_level") or 1
+
+    # Normalize common legacy exercise aliases to internal ExerciseType values
+    LEGACY_EXERCISE_ALIASES = {
+        "shoulder_rehabilitation": "shoulder_rolls",
+        "back_strengthening": "spine_twist",
+        "knee_recovery": "leg_lifts",
+        "arm_rehab": "arm_raises",
+        "neck_rehab": "neck_rotation",
+        "balance_training": "balance_training",
+        "finger_therapy": "finger_exercises",
+        # add more aliases as needed
+    }
+
+    exercise_type = LEGACY_EXERCISE_ALIASES.get(raw_exercise, raw_exercise)
+
+    # Validate exercise type and provide a friendly error message if invalid
+    try:
+        ExerciseType(exercise_type)
+    except ValueError:
+        allowed = ", ".join([e.value for e in ExerciseType])
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid exercise type '{raw_exercise}'. Allowed values: {allowed}")
+
+    # Build canonical request model (will validate other fields via Pydantic)
+    try:
+        session_request = StartSessionRequest(
+            exercise_type=exercise_type,
+            difficulty=difficulty,
+            duration_minutes=int(duration),
+            pain_level_before=int(pain_level_before)
+        )
+    except ValidationError as ve:
+        # Return a friendly 400 with validation details
+        logger.warning("StartSessionRequest validation failed", raw_payload=payload, errors=str(ve))
+        from fastapi.responses import JSONResponse
+        resp = JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={
+            "error": True,
+            "message": "Invalid start session payload",
+            "details": str(ve)
+        })
+        if settings.is_development:
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Allow-Headers"] = "*, Authorization, Content-Type"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        return resp
+
+    # Helpful debug log for session parameters
+    logger.info("Starting session with params", user_id=current_user.get("user_id"), exercise=exercise_type, difficulty=difficulty, duration=duration, pain_level_before=pain_level_before)
+
+    try:
+        return await start_therapy_session(request, session_request, current_user)
+    except HTTPException:
+        # Re-raise known HTTPExceptions so FastAPI handles them as usual
+        raise
+    except Exception as e:
+        # Log full exception and return a friendly JSON error in development
+        logger.exception("Legacy start-session failed", exc_info=True, raw_payload=payload)
+        from fastapi.responses import JSONResponse
+        resp = JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={
+            "error": True,
+            "message": "Failed to start therapy session",
+            "details": str(e)
+        })
+        if settings.is_development:
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Allow-Headers"] = "*, Authorization, Content-Type"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        return resp
 
 
 @router.post("/session/motion", response_model=MotionAnalysisResponse)
@@ -240,6 +342,96 @@ async def complete_therapy_session(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to complete therapy session"
         )
+
+
+# Legacy alias for completion endpoint
+@router.post("/complete-exercise", response_model=dict)
+@rate_limit_general
+async def complete_therapy_session_legacy(
+    request: Request,
+    payload: dict = Body(...)
+):
+    """Legacy alias that accepts old frontend payloads for exercise completion.
+
+    If payload contains 'performance_score', record performance. Otherwise, map to session completion model.
+    """
+    # If frontend sends performance_score, handle accordingly
+    if "performance_score" in payload:
+        return await complete_exercise_performance(request, payload)
+
+    # Otherwise map to CompleteSessionRequest for full session completion
+    session_id = payload.get("session_id")
+    pain_after = payload.get("pain_level_after")
+    feedback = payload.get("user_feedback") or payload.get("feedback")
+
+    if not session_id or pain_after is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id and pain_level_after are required")
+
+    complete_req = CompleteSessionRequest(session_id=session_id, pain_level_after=int(pain_after), user_feedback=feedback)
+
+    # Use authenticated user if available, else fallback to payload user_id or demo
+    current_user = getattr(request.state, "user", None)
+    if not current_user:
+        user_id = payload.get("user_id") or "demo_user"
+        current_user = {"user_id": user_id, "role": "patient"}
+
+    return await complete_therapy_session(request, complete_req, current_user)
+
+
+# Additional legacy endpoint for frontend that sends exercise performance data
+@router.post("/exercise/complete", tags=["Therapy Game"], response_model=dict)
+@rate_limit_general
+async def complete_exercise_performance(
+    request: Request,
+    payload: dict = Body(...)
+):
+    """Accepts legacy payloads from the frontend (session_id, exercise_name, performance_score)
+    and stores performance metrics, returning updated score/progress.
+    """
+    try:
+        session_id = payload.get("session_id")
+        if not session_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id is required")
+
+        perf_score = float(payload.get("performance_score", 0))
+
+        # Fetch session
+        session = await DatabaseService.mongodb_find_one("therapy_sessions", {"session_id": session_id})
+        if not session:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+        perf = session.get("performance_metrics", {})
+        completed = int(perf.get("completed_repetitions", 0)) + 1
+        accuracy_scores = perf.get("accuracy_scores", []) + [perf_score]
+
+        perf["completed_repetitions"] = completed
+        perf["accuracy_scores"] = accuracy_scores
+
+        # Update the session document
+        await DatabaseService.mongodb_update_one(
+            "therapy_sessions",
+            {"session_id": session_id},
+            {"$set": {"performance_metrics": perf}}
+        )
+
+        # Compute simple scoring/progress
+        base_points = TherapyGameService.GAME_MECHANICS.get("base_points_per_rep", 10)
+        total_score = int(sum(accuracy_scores) * base_points)
+        target = session.get("target_repetitions", 10)
+        progress = min(100, (completed / target) * 100)
+
+        return {
+            "success": True,
+            "total_score": total_score,
+            "progress": progress,
+            "completed_repetitions": completed
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to record exercise performance", error=str(e))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to record performance")
 
 
 @router.get("/progress", response_model=UserProgressResponse)

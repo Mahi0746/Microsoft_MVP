@@ -2,6 +2,7 @@
 import uuid
 from typing import Optional, List
 from fastapi import Request, HTTPException, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
 import structlog
@@ -27,21 +28,44 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/docs",
         "/redoc",
         "/openapi.json",
-        f"{settings.api_prefix}/auth/signup",
-        f"{settings.api_prefix}/auth/login",
-        f"{settings.api_prefix}/auth/refresh",
+        "/api/v1/auth/signup",
+        "/api/v1/auth/login",
+        "/api/v1/auth/refresh",
+        # Legacy paths (without v1) for backward compatibility
+        "/api/auth/signup",
+        "/api/auth/login",
+        "/api/auth/refresh",
     }
     
     # Paths that start with these prefixes are public
     PUBLIC_PREFIXES = [
         "/static/",
         "/favicon.ico",
-        "/dev/" if settings.is_development else None
+        "/dev/" if settings.is_development else None,
+        # Allow voice endpoints in both versioned and legacy prefixes to be public (e.g., /api/voice/, /api/v1/voice/)
+        f"{settings.api_prefix}/voice/",
+        "/api/voice/",
+        # Allow therapy game endpoints (versioned + legacy)
+        f"{settings.api_prefix}/therapy-game/",
+        "/api/therapy-game/",
+        # Allow AR scanner endpoints (versioned + legacy)
+        f"{settings.api_prefix}/ar-scanner/",
+        "/api/ar-scanner/",
+        # Allow doctors marketplace endpoints (versioned + legacy)
+        f"{settings.api_prefix}/doctors/",
+        "/api/doctors/",
+        # Allow future simulator endpoints (versioned + legacy)
+        f"{settings.api_prefix}/future-simulator/",
+        "/api/future-simulator/"
     ]
     
     def __init__(self, app):
         super().__init__(app)
         self.public_prefixes = [p for p in self.PUBLIC_PREFIXES if p is not None]
+        # Log the public paths for debugging
+        logger.info("Auth middleware initialized", 
+                   public_paths=list(self.PUBLIC_PATHS),
+                   api_prefix=settings.api_prefix)
     
     async def dispatch(self, request: Request, call_next):
         """Process request through authentication middleware."""
@@ -49,19 +73,37 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Add request ID for tracing
         request.state.request_id = str(uuid.uuid4())
         
-        # Check if path is public
-        if self._is_public_path(request.url.path):
+        # Always allow OPTIONS requests (CORS preflight)
+        if request.method == "OPTIONS":
             return await call_next(request)
+        
+        # Check if path is public. For public paths, allow unauthenticated access,
+        # but if an Authorization header is present attempt to validate the token
+        # so handlers that optionally use `request.state.user` can work.
+        if self._is_public_path(request.url.path):
+            authorization = request.headers.get("Authorization")
+            if not authorization:
+                return await call_next(request)
+            # If Authorization header exists, fall through and validate token
         
         # Extract and validate JWT token
         try:
             token = await self._extract_token(request)
             if not token:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Authentication required",
-                    headers={"WWW-Authenticate": "Bearer"}
-                )
+                logger.warning("Authentication required: no token provided", path=request.url.path, request_id=request.state.request_id)
+                resp = JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={
+                    "error": True,
+                    "message": "Authentication required",
+                    "status_code": status.HTTP_401_UNAUTHORIZED,
+                    "path": request.url.path,
+                    "request_id": request.state.request_id
+                })
+                if settings.is_development:
+                    resp.headers["Access-Control-Allow-Origin"] = "*"
+                    resp.headers["Access-Control-Allow-Credentials"] = "true"
+                    resp.headers["Access-Control-Allow-Headers"] = "*, Authorization, Content-Type"
+                    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+                return resp
             
             # Validate token and get user info
             user_info = await self._validate_token(token)
@@ -75,8 +117,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request_id=request.state.request_id
             )
             
-        except HTTPException:
-            raise
+        except HTTPException as he:
+            # Return a JSON response instead of re-raising to avoid it bubbling out of middleware
+            logger.warning("Authentication failed", error=str(he.detail), path=request.url.path, request_id=request.state.request_id)
+            resp = JSONResponse(status_code=he.status_code, content={
+                "error": True,
+                "message": he.detail,
+                "status_code": he.status_code,
+                "path": request.url.path,
+                "request_id": request.state.request_id
+            })
+            if settings.is_development:
+                resp.headers["Access-Control-Allow-Origin"] = "*"
+                resp.headers["Access-Control-Allow-Credentials"] = "true"
+                resp.headers["Access-Control-Allow-Headers"] = "*, Authorization, Content-Type"
+                resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            return resp
         except Exception as e:
             logger.error(
                 "Authentication error",
@@ -84,25 +140,40 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 path=request.url.path,
                 request_id=request.state.request_id
             )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication credentials"
-            )
+            resp = JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={
+                "error": True,
+                "message": "Invalid authentication credentials",
+                "status_code": status.HTTP_401_UNAUTHORIZED,
+                "path": request.url.path,
+                "request_id": request.state.request_id
+            })
+            if settings.is_development:
+                resp.headers["Access-Control-Allow-Origin"] = "*"
+                resp.headers["Access-Control-Allow-Credentials"] = "true"
+                resp.headers["Access-Control-Allow-Headers"] = "*, Authorization, Content-Type"
+                resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            return resp
         
         return await call_next(request)
     
     def _is_public_path(self, path: str) -> bool:
         """Check if the path is public (doesn't require authentication)."""
         
+        # Log the path being checked for debugging
+        logger.debug("Checking path", path=path, public_paths=list(self.PUBLIC_PATHS))
+        
         # Exact path matches
         if path in self.PUBLIC_PATHS:
+            logger.debug("Path is public (exact match)", path=path)
             return True
         
         # Prefix matches
         for prefix in self.public_prefixes:
             if path.startswith(prefix):
+                logger.debug("Path is public (prefix match)", path=path, prefix=prefix)
                 return True
         
+        logger.debug("Path is not public", path=path)
         return False
     
     async def _extract_token(self, request: Request) -> Optional[str]:
@@ -111,10 +182,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Try Authorization header first
         authorization = request.headers.get("Authorization")
         if authorization and authorization.startswith("Bearer "):
+            # Log only a short prefix for debugging (do not log full tokens)
+            try:
+                logger.debug("Authorization header received", prefix=authorization[:30])
+            except Exception:
+                pass
             return authorization.split(" ")[1]
         
         # Try cookie as fallback
         token = request.cookies.get("access_token")
+        if token:
+            try:
+                logger.debug("Token found in cookies", prefix=str(token)[:10])
+            except Exception:
+                pass
         if token:
             return token
         
@@ -182,24 +263,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
         """Get user details from database."""
         
         try:
-            db = await DatabaseService.get_postgres_connection()
+            # Get user from MongoDB
+            user = await DatabaseService.mongodb_find_one(
+                "users",
+                {"user_id": user_id}
+            )
             
-            query = """
-                SELECT id, email, role, is_active, created_at, updated_at
-                FROM users 
-                WHERE id = $1
-            """
-            
-            result = await db.fetchrow(query, user_id)
-            
-            if result:
+            if user:
                 return {
-                    "id": str(result["id"]),
-                    "email": result["email"],
-                    "role": result["role"],
-                    "is_active": result["is_active"],
-                    "created_at": result["created_at"],
-                    "updated_at": result["updated_at"]
+                    "id": str(user.get("user_id") or user.get("_id")),
+                    "email": user["email"],
+                    "role": user["role"],
+                    "is_active": user.get("is_active", True),
+                    "created_at": user.get("created_at"),
+                    "updated_at": user.get("updated_at")
                 }
             
             return None
@@ -301,13 +378,19 @@ def require_role(allowed_roles: List[str]):
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            # Get request from args (FastAPI injects it)
+            # Get request from args or kwargs (FastAPI may inject as kwarg)
             request = None
             for arg in args:
                 if isinstance(arg, Request):
                     request = arg
                     break
-            
+            if not request:
+                # check kwargs
+                for v in kwargs.values():
+                    if isinstance(v, Request):
+                        request = v
+                        break
+
             if not request:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -369,19 +452,18 @@ async def _doctor_has_patient_access(doctor_user_id: str, patient_user_id: str) 
     """Check if doctor has access to patient's data through appointments."""
     
     try:
-        db = await DatabaseService.get_postgres_connection()
+        # Get appointments from MongoDB
+        appointments = await DatabaseService.mongodb_find_many(
+            "appointments",
+            {
+                "doctor_user_id": doctor_user_id,
+                "patient_user_id": patient_user_id,
+                "status": {"$in": ["confirmed", "completed"]}
+            },
+            limit=1
+        )
         
-        query = """
-            SELECT COUNT(*) as count
-            FROM appointments a
-            JOIN doctors d ON d.id = a.doctor_id
-            WHERE d.user_id = $1 
-            AND a.patient_id = $2
-            AND a.status IN ('confirmed', 'completed')
-        """
-        
-        result = await db.fetchrow(query, doctor_user_id, patient_user_id)
-        return result["count"] > 0
+        return len(appointments) > 0
         
     except Exception as e:
         logger.error(

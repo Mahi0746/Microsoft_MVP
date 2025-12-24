@@ -772,3 +772,65 @@ class ARMedicalScannerService:
         except Exception as e:
             logger.error(f"Failed to store scan result: {e}")
             return f"local_{int(time.time())}"
+
+
+    # -------------------------------------------------------------------------
+    # Minimal history / analytics helpers (compatibility)
+    # -------------------------------------------------------------------------
+    @classmethod
+    async def get_scan_history(cls, user_id: str, scan_type: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+        """Return recent scans for a user. Uses MongoDB collection `ar_scans` if available.
+
+        Returns an empty list on error or when no DB is configured.
+        """
+        try:
+            filt = {"user_id": user_id}
+            if scan_type:
+                filt["scan_type"] = scan_type
+
+            scans = await DatabaseService.mongodb_find_many(
+                "ar_scans",
+                filt,
+                projection={"ai_analysis": 0},
+                limit=limit,
+                sort=[("timestamp", -1)]
+            )
+
+            return scans or []
+
+        except Exception as e:
+            logger.warning("get_scan_history fallback used", error=str(e))
+            return []
+
+    @classmethod
+    async def get_scan_analytics(cls, user_id: str) -> Dict[str, Any]:
+        """Return simple analytics for user's scans. Returns a stable shape even if DB is missing."""
+        try:
+            scans = await cls.get_scan_history(user_id, limit=100)
+            total = len(scans)
+            avg_conf = 0.0
+            types = {}
+            latest = None
+            if scans:
+                confidences = [s.get("confidence_score") or s.get("analysis_result", {}).get("confidence", 0.0) for s in scans]
+                avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
+                for s in scans:
+                    types[s.get("scan_type", "unknown")] = types.get(s.get("scan_type", "unknown"), 0) + 1
+                latest = scans[0]
+
+            return {
+                "total_scans": total,
+                "scan_types": types,
+                "average_confidence": float(avg_conf),
+                "urgency_distribution": {},
+                "latest_scan": latest
+            }
+        except Exception as e:
+            logger.warning("get_scan_analytics fallback used", error=str(e))
+            return {
+                "total_scans": 0,
+                "scan_types": {},
+                "average_confidence": 0.0,
+                "urgency_distribution": {},
+                "latest_scan": None
+            }

@@ -11,19 +11,22 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 import structlog
 
-from config_flexible import settings, configure_logging, APIDocsConfig
+from config import settings, configure_logging, APIDocsConfig
 from api.middleware.auth import AuthMiddleware
 from api.middleware.rate_limit import RateLimitMiddleware
 from api.middleware.logging import LoggingMiddleware
 from api.routes import (
     auth, health, voice, doctors, websocket, ar_scanner, therapy_game, future_simulator
 )
+from api.routes import crm
 from services.db_service import DatabaseService
 from services.ai_service import AIService
 
 
 # Configure logging
 configure_logging()
+# Silence noisy watchfiles debug events during reload
+logging.getLogger("watchfiles").setLevel(logging.WARNING)
 logger = structlog.get_logger(__name__)
 
 
@@ -42,16 +45,24 @@ async def lifespan(app: FastAPI):
         await AIService.initialize()
         logger.info("AI services initialized")
         
-        # Initialize ML models
-        from services.ml_service import MLModelService
-        await MLModelService.initialize_models()
-        logger.info("ML models initialized")
+        # Initialize ML models (optional)
+        try:
+            from services.ml_service import MLModelService
+            await MLModelService.initialize_models()
+            logger.info("ML models initialized")
+        except Exception as e:
+            logger.warning("ML models initialization failed", error=str(e))
         
-        # Initialize MediaPipe for therapy game
+        # Initialize MediaPipe for therapy game (optional)
         if settings.enable_therapy_game:
-            from services.therapy_game_service import TherapyGameService
-            await TherapyGameService.initialize_mediapipe()
-            logger.info("MediaPipe models initialized")
+            try:
+                from services.therapy_game_service import TherapyGameService
+                await TherapyGameService.initialize_mediapipe()
+                logger.info("MediaPipe models initialized")
+            except Exception as e:
+                logger.warning("MediaPipe initialization failed, therapy game disabled", error=str(e))
+                # Disable therapy game feature if MediaPipe fails
+                settings.enable_therapy_game = False
         
         # Start background tasks
         asyncio.create_task(background_health_monitor())
@@ -80,15 +91,38 @@ async def lifespan(app: FastAPI):
 # Create FastAPI application
 app = FastAPI(
     title=APIDocsConfig.title,
-    description=APIDocsConfig.description,
     version=APIDocsConfig.version,
     contact=APIDocsConfig.contact,
-    license_info=APIDocsConfig.license_info,
-    openapi_tags=APIDocsConfig.tags_metadata,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
     lifespan=lifespan
 )
+
+# DEV HELP: ensure CORS headers are always present so browser error responses aren't blocked by CORS
+# This is safe for development and makes debugging 500s easier. Remove in production.
+if settings.is_development:
+    @app.middleware("http")
+    async def add_cors_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = "*, Authorization, Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        return response
+
+
+# Helper to add CORS headers to programmatically-created responses (e.g., exception handlers)
+def _add_cors_headers(response: JSONResponse):
+    try:
+        if settings.is_development:
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Allow-Headers"] = "*, Authorization, Content-Type"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    except Exception:
+        # Be defensive; don't let CORS header injection mask the original error
+        pass
+    return response
 
 
 # =============================================================================
@@ -98,11 +132,12 @@ app = FastAPI(
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=["*"] if settings.is_development else settings.allowed_origins,  # Allow all origins in dev
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["X-Request-ID", "X-Rate-Limit-Remaining"]
+    expose_headers=["X-Request-ID", "X-Rate-Limit-Remaining"],
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 # Trusted Host Middleware (Security)
@@ -114,7 +149,7 @@ if settings.is_production:
 
 # Custom Middleware
 app.add_middleware(LoggingMiddleware)
-app.add_middleware(RateLimitMiddleware)
+# app.add_middleware(RateLimitMiddleware)  # Temporarily disabled due to Redis issues
 app.add_middleware(AuthMiddleware)
 
 
@@ -134,7 +169,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         client_ip=request.client.host if request.client else None
     )
     
-    return JSONResponse(
+    resp = JSONResponse(
         status_code=exc.status_code,
         content={
             "error": True,
@@ -145,6 +180,8 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             "request_id": getattr(request.state, "request_id", None)
         }
     )
+    _add_cors_headers(resp)
+    return resp
 
 
 @app.exception_handler(RequestValidationError)
@@ -152,23 +189,36 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     """Handle request validation errors."""
     logger.warning(
         "Validation error occurred",
-        errors=exc.errors(),
+        errors=[str(error) for error in exc.errors()],  # Convert to strings
         path=request.url.path,
         method=request.method
     )
     
-    return JSONResponse(
+    # Convert errors to JSON-serializable format
+    serializable_errors = []
+    for error in exc.errors():
+        serializable_error = {
+            "type": error.get("type"),
+            "loc": error.get("loc"),
+            "msg": error.get("msg"),
+            "input": str(error.get("input")) if error.get("input") is not None else None
+        }
+        serializable_errors.append(serializable_error)
+    
+    resp = JSONResponse(
         status_code=422,
         content={
             "error": True,
             "message": "Validation error",
-            "details": exc.errors(),
+            "details": serializable_errors,
             "status_code": 422,
             "timestamp": "2025-12-17T10:30:00Z",
             "path": request.url.path,
             "request_id": getattr(request.state, "request_id", None)
         }
     )
+    _add_cors_headers(resp)
+    return resp
 
 
 @app.exception_handler(Exception)
@@ -194,7 +244,7 @@ async def global_exception_handler(request: Request, exc: Exception):
             "traceback": str(exc)
         }
     
-    return JSONResponse(
+    resp = JSONResponse(
         status_code=500,
         content={
             "error": True,
@@ -206,6 +256,8 @@ async def global_exception_handler(request: Request, exc: Exception):
             "request_id": getattr(request.state, "request_id", None)
         }
     )
+    _add_cors_headers(resp)
+    return resp
 
 
 # =============================================================================
@@ -261,10 +313,24 @@ app.include_router(
     tags=["Authentication"]
 )
 
+# Legacy API Routes (without v1) for backward compatibility
+app.include_router(
+    auth.router,
+    prefix="/api/auth",
+    tags=["Authentication (Legacy)"]
+)
+
 app.include_router(
     health.router,
     prefix=f"{settings.api_prefix}/health",
     tags=["Health"]
+)
+
+# Legacy Health routes (without version)
+app.include_router(
+    health.router,
+    prefix="/api/health",
+    tags=["Health (Legacy)"]
 )
 
 app.include_router(
@@ -273,10 +339,24 @@ app.include_router(
     tags=["Voice"]
 )
 
+# Legacy API Routes (without version) for backward compatibility
+app.include_router(
+    voice.router,
+    prefix="/api/voice",
+    tags=["Voice (Legacy)"]
+)
+
 app.include_router(
     doctors.router,
     prefix=f"{settings.api_prefix}/doctors",
     tags=["Doctors"]
+)
+
+# Legacy Doctors routes (without version)
+app.include_router(
+    doctors.router,
+    prefix="/api/doctors",
+    tags=["Doctors (Legacy)"]
 )
 
 app.include_router(
@@ -285,16 +365,51 @@ app.include_router(
     tags=["AR Scanner"]
 )
 
+# Legacy AR Scanner routes (without version)
+app.include_router(
+    ar_scanner.router,
+    prefix="/api/ar-scanner",
+    tags=["AR Scanner (Legacy)"]
+)
+
 app.include_router(
     therapy_game.router,
     prefix=f"{settings.api_prefix}/therapy-game",
     tags=["Therapy Game"]
 )
 
+# Legacy Therapy Game routes (without version)
+app.include_router(
+    therapy_game.router,
+    prefix="/api/therapy-game",
+    tags=["Therapy Game (Legacy)"]
+)
+
 app.include_router(
     future_simulator.router,
     prefix=f"{settings.api_prefix}/future-simulator",
     tags=["Future Simulator"]
+)
+
+# CRM admin routes (users, appointments)
+app.include_router(
+    crm.router,
+    prefix=f"{settings.api_prefix}/crm",
+    tags=["CRM"]
+)
+
+# Legacy CRM routes
+app.include_router(
+    crm.router,
+    prefix="/api/crm",
+    tags=["CRM (Legacy)"]
+)
+
+# Legacy Future Simulator routes (without version)
+app.include_router(
+    future_simulator.router,
+    prefix="/api/future-simulator",
+    tags=["Future Simulator (Legacy)"]
 )
 
 # WebSocket routes
@@ -345,13 +460,25 @@ async def perform_health_checks() -> Dict[str, Dict[str, Any]]:
     except Exception as e:
         checks["database"] = {"status": "unhealthy", "error": str(e)}
     
-    # Redis health check
-    try:
-        from services.db_service import redis_client
-        await redis_client.ping()
-        checks["redis"] = {"status": "healthy", "response_time_ms": 10}
-    except Exception as e:
-        checks["redis"] = {"status": "unhealthy", "error": str(e)}
+    # Redis health check (only when configured)
+    if settings.redis_url:
+        try:
+            # Use DatabaseService redis client if available
+            client = None
+            try:
+                client = DatabaseService.get_redis_client()
+            except Exception:
+                client = None
+
+            if client:
+                pong = await client.ping()
+                checks["redis"] = {"status": "healthy" if pong else "unhealthy", "response_time_ms": 10}
+            else:
+                checks["redis"] = {"status": "unhealthy", "error": "Redis client not initialized"}
+        except Exception as e:
+            checks["redis"] = {"status": "unhealthy", "error": str(e)}
+    else:
+        checks["redis"] = {"status": "not_configured"}
     
     # AI services health check
     try:
@@ -402,7 +529,7 @@ if settings.is_development:
             "environment": settings.environment,
             "debug": settings.debug,
             "api_prefix": settings.api_prefix,
-            "database_url": settings.database_url.split("@")[-1],  # Hide credentials
+            "database_url": settings.mongodb_url.split("@")[-1],  # Hide credentials
             "features": {
                 "voice_analysis": settings.enable_voice_analysis,
                 "ar_scanner": settings.enable_ar_scanner,
