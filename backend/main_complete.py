@@ -1,9 +1,20 @@
 # HealthSync AI - Complete Backend with All Features
+import sys
+import os
+
+# Fix Windows console encoding for emoji support
+if sys.platform == "win32":
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    # Force UTF-8 encoding for stdout/stderr
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8')
+
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-import os
 from datetime import datetime, timedelta
 import uvicorn
 import logging
@@ -37,7 +48,7 @@ def check_supabase():
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     # Startup
-    logger.info("🚀 Starting HealthSync AI Complete Backend...")
+    logger.info("Starting HealthSync AI Complete Backend...")
     
     global mongodb_service, supabase_client
     
@@ -47,48 +58,48 @@ async def lifespan(app: FastAPI):
             from services.mongodb_atlas_service import get_mongodb_service, close_mongodb_connection
             mongodb_service = await get_mongodb_service()
             if mongodb_service and mongodb_service.client:
-                logger.info("✅ MongoDB Atlas connected successfully!")
+                logger.info("MongoDB Atlas connected successfully!")
             else:
-                logger.warning("⚠️ MongoDB Atlas connection failed, using demo mode")
+                logger.warning("MongoDB Atlas connection failed, using demo mode")
                 mongodb_service = None
         except Exception as e:
-            logger.warning(f"⚠️ MongoDB Atlas error: {e}, using demo mode")
+            logger.warning(f"MongoDB Atlas error: {e}, using demo mode")
             mongodb_service = None
     else:
-        logger.info("ℹ️ MongoDB Atlas not configured, using demo mode")
+        logger.info("MongoDB Atlas not configured, using demo mode")
     
     # Supabase removed - using MongoDB only
     supabase_client = None
     
     # Log AI service status
     ai_status = settings.get_ai_status()
-    logger.info(f"🤖 AI Services Status: {ai_status}")
+    logger.info(f"AI Services Status: {ai_status}")
     
     # Initialize AR Medical Scanner models
     if settings.enable_ar_scanner:
         try:
-            logger.info("🎯 Initializing AR Medical Scanner...")
+            logger.info("Initializing AR Medical Scanner...")
             from services.ar_scanner_service import ARMedicalScannerService
             await ARMedicalScannerService.initialize_models()
-            logger.info("✅ AR Medical Scanner initialized successfully")
+            logger.info("AR Medical Scanner initialized successfully")
         except Exception as e:
-            logger.warning(f"⚠️ AR Scanner initialization failed: {e}")
+            logger.warning(f"AR Scanner initialization failed: {e}")
     
     if settings.is_demo_mode():
-        logger.info("🎭 Running in DEMO MODE - connect real API keys for full functionality")
+        logger.info("Running in DEMO MODE - connect real API keys for full functionality")
     else:
-        logger.info("🚀 Running with REAL AI SERVICES")
+        logger.info("Running with REAL AI SERVICES")
     
     yield
     
     # Shutdown
-    logger.info("🔄 Shutting down HealthSync AI...")
+    logger.info("Shutting down HealthSync AI...")
     if mongodb_service:
         try:
             await close_mongodb_connection()
         except:
             pass
-    logger.info("✅ Shutdown complete")
+    logger.info("Shutdown complete")
 
 # FastAPI app
 app = FastAPI(
@@ -193,6 +204,11 @@ async def health_check():
         "features": features_status,
         "environment": settings.environment
     }
+
+@app.get("/api/health/metrics", tags=["System"])
+async def health_metrics():
+    """Health metrics endpoint for frontend compatibility"""
+    return await health_check()
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -567,13 +583,13 @@ async def process_voice_audio(
                 transcript = transcription.strip() if transcription else ""
                 
                 if transcript:
-                    logger.info(f"✅ Transcription successful: {transcript}")
+                    logger.info(f"Transcription successful: {transcript}")
                 else:
-                    logger.warning("⚠️ Transcription returned empty string")
+                    logger.warning("Transcription returned empty string")
                     transcript = "The audio was too quiet or unclear. Please speak louder and more clearly."
                     
             except Exception as e:
-                logger.error(f"❌ Groq transcription error: {type(e).__name__}: {str(e)}")
+                logger.error(f"Groq transcription error: {type(e).__name__}: {str(e)}")
                 import traceback
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 
@@ -765,7 +781,7 @@ async def scan_document(
         # Simulate OCR extraction (would use real OCR service with API keys)
         extracted_texts = {
             "prescription": "Patient: John Doe\nMedication: Ibuprofen 400mg\nDosage: Take twice daily with food\nDuration: 7 days\nDoctor: Dr. Smith\nDate: 2024-12-17",
-            "lab_report": "Patient: Jane Smith\nTest: Complete Blood Count\nHemoglobin: 12.5 g/dL (Normal)\nWhite Blood Cells: 7,200/μL (Normal)\nPlatelets: 250,000/μL (Normal)",
+            "lab_report": "Patient: Jane Smith\nTest: Complete Blood Count\nHemoglobin: 12.5 g/dL (Normal)\nWhite Blood Cells: 7,200/uL (Normal)\nPlatelets: 250,000/uL (Normal)",
             "medical_record": "Patient History: Hypertension, managed with medication\nCurrent Medications: Lisinopril 10mg daily\nAllergies: Penicillin\nLast Visit: 2024-11-15"
         }
         
@@ -855,6 +871,20 @@ async def get_user_scans(user_id: str = "demo_user", limit: int = 20):
     except Exception as e:
         logger.error(f"Get user scans error: {e}")
         raise HTTPException(status_code=500, detail="Failed to get scans")
+
+@app.get("/api/ar-scanner/history", tags=["AR Scanner"])
+async def get_ar_scanner_history(user_id: str = "demo_user", limit: int = 20):
+    """Get AR scanner history (alias for user-scans)"""
+    return await get_user_scans(user_id=user_id, limit=limit)
+
+@app.post("/api/ar-scanner/scan", tags=["AR Scanner"])
+async def scan_ar_document(
+    file: Optional[UploadFile] = File(None),
+    user_id: str = Form("demo_user"),
+    document_type: str = Form("prescription")
+):
+    """Scan AR document (alias for scan-document)"""
+    return await scan_document(file=file, user_id=user_id, document_type=document_type)
 
 # =============================================================================
 # THERAPY GAME ENDPOINTS
@@ -1478,12 +1508,12 @@ async def root():
         "database": "MongoDB Atlas" if mongodb_service else "Demo Mode",
         "ai_services": ai_status,
         "features": {
-            "voice_ai_doctor": "✅ Available",
-            "ar_medical_scanner": "✅ Available", 
-            "therapy_games": "✅ Available",
-            "doctor_marketplace": "✅ Available",
-            "future_simulator": "✅ Available",
-            "health_analytics": "✅ Available"
+            "voice_ai_doctor": "Available",
+            "ar_medical_scanner": "Available", 
+            "therapy_games": "Available",
+            "doctor_marketplace": "Available",
+            "future_simulator": "Available",
+            "health_analytics": "Available"
         },
         "endpoints": {
             "docs": "/docs",

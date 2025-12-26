@@ -1,4 +1,14 @@
 # HealthSync AI - FastAPI Main Application
+import sys
+import os
+
+# Fix Windows console encoding for emoji support
+if sys.platform == "win32":
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -104,20 +114,28 @@ if settings.is_development:
     @app.middleware("http")
     async def add_cors_headers(request: Request, call_next):
         response = await call_next(request)
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("origin")
+        # If origin is in allowed list, use it; otherwise use first allowed origin
+        if origin in settings.allowed_origins:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        elif settings.allowed_origins:
+            response.headers["Access-Control-Allow-Origin"] = settings.allowed_origins[0]
         response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Headers"] = "*, Authorization, Content-Type"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
         return response
 
 
 # Helper to add CORS headers to programmatically-created responses (e.g., exception handlers)
-def _add_cors_headers(response: JSONResponse):
+def _add_cors_headers(response: JSONResponse, origin: str = None):
     try:
         if settings.is_development:
-            response.headers["Access-Control-Allow-Origin"] = "*"
+            if origin in settings.allowed_origins:
+                response.headers["Access-Control-Allow-Origin"] = origin
+            elif settings.allowed_origins:
+                response.headers["Access-Control-Allow-Origin"] = settings.allowed_origins[0]
             response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Allow-Headers"] = "*, Authorization, Content-Type"
+            response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
     except Exception:
         # Be defensive; don't let CORS header injection mask the original error
@@ -132,13 +150,14 @@ def _add_cors_headers(response: JSONResponse):
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.is_development else settings.allowed_origins,  # Allow all origins in dev
+    allow_origins=settings.allowed_origins,  # Use specific origins instead of wildcard with credentials
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type"],
     expose_headers=["X-Request-ID", "X-Rate-Limit-Remaining"],
     max_age=3600,  # Cache preflight requests for 1 hour
 )
+
 
 # Trusted Host Middleware (Security)
 if settings.is_production:
