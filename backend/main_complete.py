@@ -11,7 +11,7 @@ if sys.platform == "win32":
     if hasattr(sys.stderr, 'reconfigure'):
         sys.stderr.reconfigure(encoding='utf-8')
 
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -323,7 +323,8 @@ async def register(user_data: dict):
                             "lastName": new_user["lastName"],
                             "role": new_user["role"]
                         },
-                        "token": f"jwt_token_{user_id}",
+                        "access_token": f"jwt_token_{user_id}",
+                        "refresh_token": f"jwt_refresh_{user_id}",
                         "storage": "mongodb_atlas"
                     }
                     
@@ -359,7 +360,8 @@ async def register(user_data: dict):
                 "lastName": user["lastName"],
                 "role": user["role"]
             },
-            "token": f"demo_jwt_token_{user['user_id']}",
+            "access_token": f"demo_jwt_token_{user['user_id']}",
+            "refresh_token": f"demo_jwt_refresh_{user['user_id']}",
             "storage": "demo_mode"
         }
         
@@ -368,6 +370,11 @@ async def register(user_data: dict):
     except Exception as e:
         logger.error(f"Registration error: {e}")
         raise HTTPException(status_code=500, detail="Registration failed")
+
+@app.post("/api/auth/signup", tags=["Authentication"])
+async def signup(user_data: dict):
+    """Signup endpoint (alias for register)"""
+    return await register(user_data)
 
 @app.post("/api/auth/login", tags=["Authentication"])
 async def login(credentials: dict):
@@ -392,7 +399,8 @@ async def login(credentials: dict):
                             "lastName": user["lastName"],
                             "role": user["role"]
                         },
-                        "token": f"jwt_token_{user['user_id']}",
+                        "access_token": f"jwt_token_{user['user_id']}",
+                        "refresh_token": f"jwt_refresh_{user['user_id']}",
                         "storage": "mongodb_atlas"
                     }
             except Exception as e:
@@ -412,7 +420,8 @@ async def login(credentials: dict):
                 "lastName": user["lastName"],
                 "role": user["role"]
             },
-            "token": f"demo_jwt_token_{user['user_id']}",
+            "access_token": f"demo_jwt_token_{user['user_id']}",
+            "refresh_token": f"demo_jwt_refresh_{user['user_id']}",
             "storage": "demo_mode"
         }
         
@@ -421,6 +430,46 @@ async def login(credentials: dict):
     except Exception as e:
         logger.error(f"Login error: {e}")
         raise HTTPException(status_code=500, detail="Login failed")
+
+@app.get("/api/auth/me", tags=["Authentication"])
+async def get_current_user(request: Request):
+    """Get current user information"""
+    try:
+        # Extract token from Authorization header
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Invalid authorization header")
+        
+        token = auth_header.replace("Bearer ", "")
+        
+        # In demo mode, extract user_id from token
+        if token.startswith("demo_jwt_token_"):
+            user_id = token.replace("demo_jwt_token_", "")
+            
+            # Find user in demo storage
+            for email, user_data in demo_storage["users"].items():
+                if user_data["user_id"] == user_id:
+                    return {
+                        "success": True,
+                        "user": {
+                            "id": user_data["user_id"],
+                            "email": user_data["email"],
+                            "firstName": user_data["firstName"],
+                            "lastName": user_data["lastName"],
+                            "role": user_data["role"],
+                            "profile": user_data.get("profile", {})
+                        },
+                        "storage": "demo_mode"
+                    }
+        
+        # If we get here, token is invalid
+        raise HTTPException(status_code=401, detail="Invalid token")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get current user error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get user information")
 
 # =============================================================================
 # VOICE AI DOCTOR ENDPOINTS
